@@ -7,7 +7,8 @@ import logging
 import datetime
 import platform
 import pystray
-from PIL import Image
+from PIL import Image, ImageDraw
+
 from dotenv import load_dotenv
 import os
 
@@ -673,7 +674,7 @@ class TelegramGUI:
                   padx=20, pady=8, relief=tk.FLAT, cursor="hand2").pack(side=tk.LEFT, padx=8)
         tk.Button(button_frame, text="Закрыть", command=close,
                   bg="#dc3545", fg="white", font=("Arial", 11, "bold"),
-                  padx=20, pady=8, relief=tk.FLAT, cursor="hand2").pack(side=tk.LEFT, padx=8)
+                  padx=20, pady=8, relief=tk.FLAT, cursor="hand2").pack(side=tk.RIGHT, padx=8)
 
         # Добавляем popup в список активных
         self.active_popups.append(popup)
@@ -718,8 +719,29 @@ class TelegramGUI:
 
     def setup_tray(self):
         """Создаёт иконку в трее с обработкой левого клика"""
-        # Создаём простую иконку
-        image = Image.new('RGB', (64, 64), color=(0, 136, 204))  # Telegram blue
+        size = 64
+        # Синий квадрат (Telegram blue)
+        image = Image.new('RGB', (size, size), color=(0, 136, 204))
+
+        draw = ImageDraw.Draw(image)
+
+        # Исходные координаты "самолётика"
+        plane = [
+            (size * 0.25, size * 0.75),  # хвост
+            (size * 0.80, size * 0.55),  # нос
+            (size * 0.35, size * 0.25)  # верхняя точка крыла
+        ]
+
+        # Разворот на 180°: отражаем относительно центра
+        rotated = [(size - x, size - y) for (x, y) in plane]
+
+        # Рисуем белый треугольник
+        draw.polygon(rotated, fill="white")
+
+        # Прорезь в хвосте — синяя линия до половины треугольника
+        tail_start = (size * 0.25, size * 0.75)  # хвост
+        tail_end = (size * 0.575, size * 0.450)  # примерно середина медианы квадрата
+        draw.line([tail_start, tail_end], fill=(0, 136, 204), width=int(size * 0.08))
 
         def on_left_click(icon, item):
             """Обработка левого клика - сворачивание/разворачивание окна"""
@@ -729,7 +751,7 @@ class TelegramGUI:
             """Выход из приложения"""
             self.quit_app()
 
-        # Создаём меню трея
+        # Меню трея
         menu = pystray.Menu(
             pystray.MenuItem('Открыть/Свернуть', on_left_click, default=True),
             pystray.MenuItem('Выход', on_quit)
@@ -737,7 +759,6 @@ class TelegramGUI:
 
         self.tray_icon = pystray.Icon('telegram_client', image, 'Telegram Client', menu)
 
-        # Запуск pystray (блокирующий) — он уже в отдельном потоке
         try:
             self.tray_icon.run()
         except Exception:
