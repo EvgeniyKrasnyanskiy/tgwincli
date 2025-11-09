@@ -8,7 +8,6 @@ import datetime
 import platform
 import pystray
 from PIL import Image, ImageDraw
-
 from dotenv import load_dotenv
 import os
 
@@ -44,6 +43,7 @@ class TelegramGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Telegram Client")
+
         # Центрируем окно
         window_width = 800
         window_height = 600
@@ -52,6 +52,7 @@ class TelegramGUI:
         x = (screen_width / 2) - (window_width / 2)
         y = (screen_height / 2) - (window_height / 2)
         self.root.geometry(f"{window_width}x{window_height}+{int(x)}+{int(y)}")
+
         self.root.withdraw()  # Скрываем основное окно по умолчанию
 
         self.client = None
@@ -255,6 +256,9 @@ class TelegramGUI:
                 if self.current_chat and getattr(self.current_chat, 'id', None) == chat_id:
                     display_text = f"[{timestamp}] {sender_name}: {message} {media_info}".strip()
                     self.root.after(0, lambda dt=display_text: self.display_message(dt))
+                    # Автоматически отмечаем как прочитанное если чат открыт
+                    if self.root.winfo_viewable():
+                        asyncio.run_coroutine_threadsafe(self.mark_as_read(), self.loop)
 
                 self.root.after(0, lambda: self.update_unread_marks())
 
@@ -413,6 +417,8 @@ class TelegramGUI:
 
         if self.loop:
             asyncio.run_coroutine_threadsafe(self.load_messages(), self.loop)
+            # Отмечаем сообщения как прочитанные
+            asyncio.run_coroutine_threadsafe(self.mark_as_read(), self.loop)
 
     async def load_messages(self):
         self.root.after(0, lambda: self.messages_area.config(state='normal'))
@@ -459,6 +465,18 @@ class TelegramGUI:
                 self.root.after(0, lambda t=text: self.display_message(t))
 
         self.root.after(0, lambda: self.messages_area.config(state='disabled'))
+
+    async def mark_as_read(self):
+        """Отмечает все сообщения в текущем чате как прочитанные"""
+        try:
+            if self.current_chat:
+                await self.client.send_read_acknowledge(self.current_chat)
+                logging.info(f"Сообщения в чате отмечены как прочитанные")
+                # Обновляем список диалогов чтобы убрать звездочку
+                await asyncio.sleep(0.5)  # Небольшая задержка для обновления статуса
+                await self.load_dialogs()
+        except Exception as e:
+            logging.error(f"Ошибка отметки сообщений как прочитанных: {e}")
 
     def display_message(self, message):
         self.messages_area.config(state='normal')
@@ -681,7 +699,7 @@ class TelegramGUI:
                   padx=20, pady=8, relief=tk.FLAT, cursor="hand2").pack(side=tk.LEFT, padx=8)
         tk.Button(button_frame, text="Закрыть", command=close,
                   bg="#dc3545", fg="white", font=("Arial", 11, "bold"),
-                  padx=20, pady=8, relief=tk.FLAT, cursor="hand2").pack(side=tk.RIGHT, padx=8)
+                  padx=20, pady=8, relief=tk.FLAT, cursor="hand2").pack(side=tk.LEFT, padx=8)
 
         # Добавляем popup в список активных
         self.active_popups.append(popup)
