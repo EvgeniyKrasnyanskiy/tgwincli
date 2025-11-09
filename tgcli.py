@@ -44,7 +44,14 @@ class TelegramGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Telegram Client")
-        self.root.geometry("800x600")
+        # Центрируем окно
+        window_width = 800
+        window_height = 600
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        x = (screen_width / 2) - (window_width / 2)
+        y = (screen_height / 2) - (window_height / 2)
+        self.root.geometry(f"{window_width}x{window_height}+{int(x)}+{int(y)}")
         self.root.withdraw()  # Скрываем основное окно по умолчанию
 
         self.client = None
