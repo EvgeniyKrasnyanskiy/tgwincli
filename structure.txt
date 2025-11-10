@@ -1,0 +1,27 @@
+tgclient/
+├── main.py                      # ✅ Точка входа (запуск)
+├── tgcli1mod.py                 # ✅ Точка входа (одномодульный простой клиент)
+├── .env                         # ✅ Конфигурация API
+├── requirements.txt             # ✅ Зависимости
+│
+├── config/
+│   ├── __init__.py
+│   └── settings.py             # ✅ Настройки приложения
+│
+├── gui/
+│   ├── __init__.py
+│   ├── telegram_gui.py         # ✅ Главный GUI класс
+│   ├── widgets.py              # ✅ Виджеты интерфейса
+│   └── popup.py                # ✅ Popup окна
+│
+├── client/
+│   ├── __init__.py
+│   ├── telegram_client.py      # ✅ Telegram клиент
+│   └── handlers.py             # ✅ Обработчики событий
+│
+├── utils/
+│   ├── __init__.py
+│   ├── media.py                # ✅ Работа с медиа
+│   └── tray.py                 # ✅ Системный трей
+│
+└── media/                      # ✅ Папка для скачанных файлов
