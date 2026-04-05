@@ -441,7 +441,7 @@ class TelegramGUI:
 
     def on_popup_close(self, popup, message, chat_id):
         self.remove_popup(popup)
-        if self.loop:
+        if self.loop and self.client:
             short_message = message[:50] + "..." if len(message) > 50 else message
             reply_text = f'Пользователь закрыл уведомление на сообщение: "{short_message}"'
             asyncio.run_coroutine_threadsafe(
