@@ -9,6 +9,7 @@ import logging
 
 from config.settings import API_ID, API_HASH, PHONE, TRUSTED_CONTACTS, WINDOW_WIDTH, WINDOW_HEIGHT
 from client.telegram_client import TelegramClientManager
+from utils.app_icon import set_window_icon
 from utils.tray import create_tray_icon
 from gui.widgets import create_chat_list, create_message_area, create_input_panel
 from gui.popup import create_popup
@@ -18,6 +19,7 @@ class TelegramGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Telegram Client")
+        set_window_icon(self.root)
 
         # Центрируем окно
         screen_width = root.winfo_screenwidth()
@@ -50,6 +52,7 @@ class TelegramGUI:
         self.chat_listbox.bind('<<ListboxSelect>>', self.on_chat_select)
 
         right_frame, self.messages_area = create_message_area(main_frame)
+        self.setup_message_copy()
 
         callbacks = {
             'send': self.send_message,
@@ -59,9 +62,71 @@ class TelegramGUI:
         self.message_entry = create_input_panel(right_frame, callbacks)
 
         # Автофокус
-        self.root.bind('<FocusIn>', lambda e: self.message_entry.focus_set())
-        self.messages_area.bind('<Button-1>', lambda e: self.message_entry.focus_set())
         self.root.after(100, lambda: self.message_entry.focus_set())
+
+    def setup_message_copy(self):
+        self.message_context_menu = tk.Menu(self.messages_area, tearoff=0)
+        self.message_context_menu.add_command(label="\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c", command=self.copy_selected_messages)
+        self.message_context_menu.add_command(label="\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0432\u0441\u0451", command=self.copy_all_messages)
+        self.message_context_menu.add_command(label="\u0412\u044b\u0434\u0435\u043b\u0438\u0442\u044c \u0432\u0441\u0451", command=self.select_all_messages)
+
+        self.messages_area.bind("<Control-c>", self.copy_selected_messages_event)
+        self.messages_area.bind("<Control-C>", self.copy_selected_messages_event)
+        self.messages_area.bind("<Control-a>", self.select_all_messages)
+        self.messages_area.bind("<Control-A>", self.select_all_messages)
+        self.messages_area.bind("<Button-3>", self.show_message_context_menu)
+
+    def set_messages_area_state(self, state):
+        self.messages_area.configure(state=state)
+
+    def clear_messages_area(self):
+        self.set_messages_area_state('normal')
+        self.messages_area.delete('1.0', tk.END)
+        self.set_messages_area_state('disabled')
+
+    def append_message_to_area(self, message):
+        self.set_messages_area_state('normal')
+        self.messages_area.insert(tk.END, message + "\n")
+        self.messages_area.see(tk.END)
+        self.set_messages_area_state('disabled')
+
+    def replace_messages_area_content(self, lines):
+        self.set_messages_area_state('normal')
+        self.messages_area.delete('1.0', tk.END)
+        if lines:
+            self.messages_area.insert('1.0', '\n'.join(lines) + '\n')
+        self.messages_area.see(tk.END)
+        self.set_messages_area_state('disabled')
+
+    def copy_selected_messages(self):
+        try:
+            selected_text = self.messages_area.get("sel.first", "sel.last")
+        except tk.TclError:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(selected_text)
+
+    def copy_selected_messages_event(self, event=None):
+        self.copy_selected_messages()
+        return "break"
+
+    def copy_all_messages(self):
+        full_text = self.messages_area.get("1.0", "end-1c")
+        if not full_text:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(full_text)
+
+    def select_all_messages(self, event=None):
+        self.messages_area.focus_set()
+        self.messages_area.tag_add(tk.SEL, "1.0", "end-1c")
+        self.messages_area.mark_set(tk.INSERT, "1.0")
+        self.messages_area.see(tk.INSERT)
+        return "break"
+
+    def show_message_context_menu(self, event):
+        self.messages_area.focus_set()
+        self.message_context_menu.tk_popup(event.x_root, event.y_root)
 
     def connect_to_telegram(self):
         if not API_ID or not API_HASH or not PHONE:
@@ -154,8 +219,7 @@ class TelegramGUI:
             asyncio.run_coroutine_threadsafe(self.mark_as_read(), self.loop)
 
     async def load_messages(self):
-        self.root.after(0, lambda: self.messages_area.config(state='normal'))
-        self.root.after(0, lambda: self.messages_area.delete(1.0, tk.END))
+        self.root.after(0, self.clear_messages_area)
         self.messages_dict.clear()
 
         msgs = await self.client.get_messages(self.current_chat, limit=50)
@@ -191,7 +255,6 @@ class TelegramGUI:
                 text = f"[{timestamp}] {sender_name}: {message_text} {media_info}{edited_mark}".strip()
                 self.root.after(0, lambda t=text: self.display_message(t))
 
-        self.root.after(0, lambda: self.messages_area.config(state='disabled'))
 
     async def mark_as_read(self):
         """Отмечает все сообщения в текущем чате как прочитанные"""
@@ -205,10 +268,7 @@ class TelegramGUI:
             logging.error(f"Ошибка отметки: {e}")
 
     def display_message(self, message):
-        self.messages_area.config(state='normal')
-        self.messages_area.insert(tk.END, message + "\n")
-        self.messages_area.see(tk.END)
-        self.messages_area.config(state='disabled')
+        self.append_message_to_area(message)
 
     def send_message(self):
         if not self.client or not self.current_chat:
@@ -296,7 +356,6 @@ class TelegramGUI:
 
     def update_last_message(self, new_text):
         """Обновляет последнюю строку в области сообщений"""
-        self.messages_area.config(state='normal')
         # Получаем содержимое
         content = self.messages_area.get(1.0, tk.END)
         lines = content.split('\n')
@@ -309,23 +368,17 @@ class TelegramGUI:
         lines.append(new_text)
 
         # Обновляем содержимое
-        self.messages_area.delete(1.0, tk.END)
-        self.messages_area.insert(1.0, '\n'.join(lines) + '\n')
-        self.messages_area.see(tk.END)
-        self.messages_area.config(state='disabled')
+        self.replace_messages_area_content(lines)
 
     def remove_last_message(self):
         """Удаляет последнюю строку из области сообщений"""
-        self.messages_area.config(state='normal')
         content = self.messages_area.get(1.0, tk.END)
         lines = content.split('\n')
 
         if len(lines) >= 2:
             lines = lines[:-2]  # Удаляем последнюю строку и пустую
 
-        self.messages_area.delete(1.0, tk.END)
-        self.messages_area.insert(1.0, '\n'.join(lines) + '\n')
-        self.messages_area.config(state='disabled')
+        self.replace_messages_area_content(lines)
 
     def edit_last_message(self):
         if not self.client or not self.current_chat:
