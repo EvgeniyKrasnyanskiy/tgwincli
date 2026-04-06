@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from telethon import TelegramClient, events
@@ -11,33 +12,53 @@ class TelegramClientManager:
         self.gui = gui
         self.client = None
         self.handlers = EventHandlers(gui)
+        self.handlers_registered = False
+        self.retry_delay_seconds = 5
 
     async def start(self):
-        try:
-            logging.info(f"Creating Telegram client with API_ID={API_ID}, PHONE={PHONE}")
-            self.client = TelegramClient("session_name", API_ID, API_HASH)
-            self.gui.client = self.client
+        while not self.gui.is_closing:
+            try:
+                if self.client is None:
+                    logging.info(f"Creating Telegram client with API_ID={API_ID}, PHONE={PHONE}")
+                    self.client = TelegramClient("session_name", API_ID, API_HASH)
+                    self.gui.client = self.client
 
-            logging.info("Connecting to Telegram...")
-            await self.client.connect()
-            logging.info("Connected successfully")
+                self.gui.set_status("\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435 \u043a Telegram...", "connecting")
+                logging.info("Connecting to Telegram...")
+                await self.client.connect()
+                logging.info("Connected successfully")
 
-            if not await self.client.is_user_authorized():
-                await self.authorize()
-            else:
-                logging.info("User is already authorized")
+                if not await self.client.is_user_authorized():
+                    self.gui.set_status("\u041e\u0436\u0438\u0434\u0430\u043d\u0438\u0435 \u043a\u043e\u0434\u0430 \u0432\u0445\u043e\u0434\u0430...", "connecting")
+                    await self.authorize()
+                else:
+                    logging.info("User is already authorized")
 
-            await self.gui.load_dialogs()
-            self.register_handlers()
+                if not self.handlers_registered:
+                    self.register_handlers()
+                    self.handlers_registered = True
 
-            await self.client.run_until_disconnected()
+                await self.gui.load_dialogs()
+                self.gui.set_status("\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d", "online")
+                await self.client.run_until_disconnected()
 
-        except Exception as e:
-            logging.exception("Error in client start")
-            self.gui.root.after(
-                0,
-                lambda: self.gui.show_error(f"\u041e\u0448\u0438\u0431\u043a\u0430 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f:\n{str(e)}"),
-            )
+                if self.gui.is_closing:
+                    break
+
+                logging.warning("Telegram client disconnected")
+                self.gui.set_status(
+                    f"\u0421\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u0435 \u043f\u043e\u0442\u0435\u0440\u044f\u043d\u043e, \u043f\u043e\u0432\u0442\u043e\u0440 \u0447\u0435\u0440\u0435\u0437 {self.retry_delay_seconds} \u0441...",
+                    "warning",
+                )
+            except Exception as e:
+                if self.gui.is_closing:
+                    break
+                logging.exception("Error in client loop")
+                self.gui.set_status(
+                    f"\u041d\u0435\u0442 \u0441\u0435\u0442\u0438 / Telegram \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d, \u043f\u043e\u0432\u0442\u043e\u0440 \u0447\u0435\u0440\u0435\u0437 {self.retry_delay_seconds} \u0441...",
+                    "error",
+                )
+            await asyncio.sleep(self.retry_delay_seconds)
 
     async def authorize(self):
         try:
@@ -54,7 +75,7 @@ class TelegramClientManager:
                 0,
                 lambda: self.gui.show_error(f"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u043a\u043e\u0434: {e}"),
             )
-            return
+            raise
 
         self.gui.root.after(0, self.gui.root.deiconify)
         code = await self.gui.get_code_from_user()

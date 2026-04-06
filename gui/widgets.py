@@ -130,3 +130,23 @@ def create_progress_label(parent):
     progress_bar.pack(side=tk.LEFT, padx=5)
 
     return progress_frame, progress_label, progress_bar
+
+
+def create_status_bar(parent):
+    frame = tk.Frame(parent, bg="#eef3f7", bd=1, relief=tk.SOLID)
+    frame.pack(fill=tk.X, side=tk.BOTTOM)
+
+    status_dot = tk.Label(frame, text="\u25cf", bg="#eef3f7", fg="#6c7a86", font=("Arial", 10, "bold"))
+    status_dot.pack(side=tk.LEFT, padx=(10, 6), pady=4)
+
+    status_label = tk.Label(
+        frame,
+        text="\u041d\u0435 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d",
+        bg="#eef3f7",
+        fg="#2f3b45",
+        anchor="w",
+        font=("Arial", 9),
+    )
+    status_label.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=4)
+
+    return frame, status_dot, status_label

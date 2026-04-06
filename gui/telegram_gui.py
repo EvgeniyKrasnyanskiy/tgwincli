@@ -11,7 +11,7 @@ from config.settings import API_ID, API_HASH, PHONE, TRUSTED_CONTACTS, WINDOW_WI
 from client.telegram_client import TelegramClientManager
 from utils.app_icon import set_window_icon
 from utils.tray import create_tray_icon
-from gui.widgets import create_chat_list, create_message_area, create_input_panel
+from gui.widgets import create_chat_list, create_message_area, create_input_panel, create_status_bar
 from gui.popup import create_popup
 
 
@@ -37,7 +37,8 @@ class TelegramGUI:
         self.active_popups = []
         self.messages_dict = {}
         self.last_message_id = None
-        self.blink_timers = {}  # Для хранения таймеров мигания
+        self.blink_timers = {}
+        self.is_closing = False  # Для хранения таймеров мигания
 
         self.create_widgets()
         self.root.protocol("WM_DELETE_WINDOW", self.minimize_to_tray)
@@ -60,6 +61,8 @@ class TelegramGUI:
             'edit': self.edit_last_message
         }
         self.message_entry = create_input_panel(right_frame, callbacks)
+        _, self.status_dot, self.status_label = create_status_bar(self.root)
+        self.set_status("\u0417\u0430\u043f\u0443\u0441\u043a...", "neutral")
 
         # Автофокус
         self.root.after(100, lambda: self.message_entry.focus_set())
@@ -128,8 +131,28 @@ class TelegramGUI:
         self.messages_area.focus_set()
         self.message_context_menu.tk_popup(event.x_root, event.y_root)
 
+    def set_status(self, text, level="neutral"):
+        if self.is_closing:
+            return
+        self.root.after(0, lambda: self._apply_status(text, level))
+
+    def _apply_status(self, text, level):
+        palette = {
+            "neutral": ("#6c7a86", "#2f3b45", "#eef3f7"),
+            "connecting": ("#d48806", "#5f3b00", "#fff7e6"),
+            "online": ("#2f9e44", "#1f5130", "#edf9f0"),
+            "warning": ("#e67700", "#663c00", "#fff4e6"),
+            "error": ("#e03131", "#5c1f1f", "#fff0f0"),
+            "busy": ("#1971c2", "#163b65", "#edf4ff"),
+        }
+        dot_color, text_color, bg_color = palette.get(level, palette["neutral"])
+        self.status_dot.config(fg=dot_color, bg=bg_color)
+        self.status_label.config(text=text, fg=text_color, bg=bg_color)
+        self.status_dot.master.config(bg=bg_color)
+
     def connect_to_telegram(self):
         if not API_ID or not API_HASH or not PHONE:
+            self.set_status("\u041d\u0435 \u0437\u0430\u0434\u0430\u043d\u044b API_ID/API_HASH/PHONE", "error")
             self.show_error("Создайте файл .env с параметрами:\n"
                             "API_ID=ваш_api_id\n"
                             "API_HASH=ваш_api_hash\n"
@@ -280,6 +303,7 @@ class TelegramGUI:
             return
 
         self.message_entry.delete(0, tk.END)
+        self.set_status("\u041e\u0442\u043f\u0440\u0430\u0432\u043a\u0430 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f...", "busy")
 
         if self.loop:
             asyncio.run_coroutine_threadsafe(self.send_message_async(message), self.loop)
@@ -289,10 +313,12 @@ class TelegramGUI:
             sent_msg = await self.client.send_message(self.current_chat, message)
             self.last_message_id = getattr(sent_msg, 'id', None)
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.root.after(0, lambda: self.display_message(f"[{timestamp}] Я: {message}"))
+            self.root.after(0, lambda: self.display_message(f"[{timestamp}] \u042f: {message}"))
+            self.set_status("\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d", "online")
         except Exception as e:
-            logging.exception("Ошибка отправки")
-            self.root.after(0, lambda: self.show_error(f"Ошибка отправки: {e}"))
+            logging.exception("\u041e\u0448\u0438\u0431\u043a\u0430 \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0438")
+            self.set_status(f"\u041e\u0448\u0438\u0431\u043a\u0430 \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0438: {e}", "error")
+            self.root.after(0, lambda: self.show_error(f"\u041e\u0448\u0438\u0431\u043a\u0430 \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0438: {e}"))
 
     def attach_file(self):
         if not self.client or not self.current_chat:
@@ -317,6 +343,7 @@ class TelegramGUI:
         try:
             filename = os.path.basename(filepath)
             file_size = os.path.getsize(filepath)
+            self.set_status(f"\u041e\u0442\u043f\u0440\u0430\u0432\u043a\u0430 \u0444\u0430\u0439\u043b\u0430: {filename}", "busy")
 
             # Показываем начало отправки
             self.root.after(0, lambda: self.display_message(f"📤 Отправка: {filename} ({file_size // 1024} KB)"))
@@ -533,6 +560,7 @@ class TelegramGUI:
             self.root.withdraw()
 
     def quit_app(self):
+        self.is_closing = True
         # Отменяем все таймеры мигания
         for timer in self.blink_timers.values():
             try:
