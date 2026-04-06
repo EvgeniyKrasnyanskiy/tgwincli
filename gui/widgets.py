@@ -5,15 +5,15 @@ from tkinter import scrolledtext, ttk
 def bind_entry_context_menu(entry):
     context_menu = tk.Menu(entry, tearoff=0)
     context_menu.add_command(
-        label="\u0412\u044b\u0440\u0435\u0437\u0430\u0442\u044c (Ctrl+X)",
+        label="\u0412\u044b\u0440\u0435\u0437\u0430\u0442\u044c",
         command=lambda: entry.event_generate("<<Cut>>"),
     )
     context_menu.add_command(
-        label="\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c (Ctrl+C)",
+        label="\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c",
         command=lambda: entry.event_generate("<<Copy>>"),
     )
     context_menu.add_command(
-        label="\u0412\u0441\u0442\u0430\u0432\u0438\u0442\u044c (Ctrl+V)",
+        label="\u0412\u0441\u0442\u0430\u0432\u0438\u0442\u044c",
         command=lambda: entry.event_generate("<<Paste>>"),
     )
     context_menu.add_command(
@@ -22,7 +22,7 @@ def bind_entry_context_menu(entry):
     )
     context_menu.add_separator()
     context_menu.add_command(
-        label="\u0412\u044b\u0434\u0435\u043b\u0438\u0442\u044c \u0432\u0441\u0435 (Ctrl+A)",
+        label="\u0412\u044b\u0434\u0435\u043b\u0438\u0442\u044c \u0432\u0441\u0435",
         command=lambda: (entry.focus_set(), entry.select_range(0, tk.END), entry.icursor(tk.END)),
     )
 
