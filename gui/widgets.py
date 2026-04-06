@@ -36,9 +36,30 @@ def bind_entry_context_menu(entry):
         entry.icursor(tk.END)
         return "break"
 
+    def cut_text(event=None):
+        entry.focus_set()
+        entry.event_generate("<<Cut>>")
+        return "break"
+
+    def copy_text(event=None):
+        entry.focus_set()
+        entry.event_generate("<<Copy>>")
+        return "break"
+
+    def paste_text(event=None):
+        entry.focus_set()
+        entry.event_generate("<<Paste>>")
+        return "break"
+
     entry.bind("<Button-3>", show_context_menu)
     entry.bind("<Control-a>", select_all)
     entry.bind("<Control-A>", select_all)
+    entry.bind("<Control-x>", cut_text)
+    entry.bind("<Control-X>", cut_text)
+    entry.bind("<Control-c>", copy_text)
+    entry.bind("<Control-C>", copy_text)
+    entry.bind("<Control-v>", paste_text)
+    entry.bind("<Control-V>", paste_text)
 
 
 def create_chat_list(parent):
@@ -70,12 +91,15 @@ def create_message_area(parent):
     messages_area = scrolledtext.ScrolledText(
         frame,
         wrap=tk.WORD,
-        state="disabled",
+        state="normal",
         height=20,
         font=("Arial", 11),
         exportselection=False,
         cursor="xterm",
         insertwidth=0,
+        selectbackground="#cfe5ff",
+        selectforeground="#102030",
+        inactiveselectbackground="#cfe5ff",
     )
     messages_area.pack(fill=tk.BOTH, expand=True, pady=5)
 

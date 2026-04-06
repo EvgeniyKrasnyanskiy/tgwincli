@@ -53,8 +53,12 @@ class EventHandlers:
                 self.gui.root.after(0, lambda: self.gui.blink_chat_background())
 
         if self.gui.current_chat and getattr(self.gui.current_chat, 'id', None) == chat_id:
-            display_text = f"[{timestamp}] {sender_name}: {message} {media_info}".strip()
-            self.gui.root.after(0, lambda dt=display_text: self.gui.display_message(dt))
+            body_text = f"{message} {media_info}".strip()
+            self.gui.root.after(
+                0,
+                lambda sn=sender_name, ts=timestamp, bt=body_text:
+                self.gui.display_chat_message(sn, ts, bt, outgoing=False)
+            )
             if self.gui.root.winfo_viewable():
                 import asyncio
                 asyncio.run_coroutine_threadsafe(self.gui.mark_as_read(), self.gui.loop)

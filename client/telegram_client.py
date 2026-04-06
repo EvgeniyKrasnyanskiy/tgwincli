@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from telethon import TelegramClient, events
+from telethon.tl.functions.updates import GetStateRequest
 
 from client.handlers import EventHandlers
 from config.settings import API_HASH, API_ID, PHONE
@@ -14,6 +15,8 @@ class TelegramClientManager:
         self.handlers = EventHandlers(gui)
         self.handlers_registered = False
         self.retry_delay_seconds = 5
+        self.connection_monitor_task = None
+        self.connection_check_interval = 10
 
     async def start(self):
         while not self.gui.is_closing:
@@ -39,8 +42,10 @@ class TelegramClientManager:
                     self.handlers_registered = True
 
                 await self.gui.load_dialogs()
+                self.start_connection_monitor()
                 self.gui.set_status("\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d", "online")
                 await self.client.run_until_disconnected()
+                await self.stop_connection_monitor()
 
                 if self.gui.is_closing:
                     break
@@ -58,7 +63,50 @@ class TelegramClientManager:
                     f"\u041d\u0435\u0442 \u0441\u0435\u0442\u0438 / Telegram \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d, \u043f\u043e\u0432\u0442\u043e\u0440 \u0447\u0435\u0440\u0435\u0437 {self.retry_delay_seconds} \u0441...",
                     "error",
                 )
+                await self.stop_connection_monitor()
             await asyncio.sleep(self.retry_delay_seconds)
+
+    def start_connection_monitor(self):
+        if self.connection_monitor_task and not self.connection_monitor_task.done():
+            return
+        self.connection_monitor_task = asyncio.create_task(self.monitor_connection())
+
+    async def stop_connection_monitor(self):
+        if not self.connection_monitor_task:
+            return
+        self.connection_monitor_task.cancel()
+        try:
+            await self.connection_monitor_task
+        except asyncio.CancelledError:
+            pass
+        self.connection_monitor_task = None
+
+    async def monitor_connection(self):
+        while not self.gui.is_closing:
+            await asyncio.sleep(self.connection_check_interval)
+            if self.gui.is_closing or not self.client:
+                return
+            if not self.client.is_connected():
+                self.gui.set_status(
+                    f"\u0421\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u0435 \u043f\u043e\u0442\u0435\u0440\u044f\u043d\u043e, \u043f\u043e\u0432\u0442\u043e\u0440 \u0447\u0435\u0440\u0435\u0437 {self.retry_delay_seconds} \u0441...",
+                    "warning",
+                )
+                return
+            try:
+                await asyncio.wait_for(self.client(GetStateRequest()), timeout=8)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logging.warning("Connection health check failed", exc_info=True)
+                self.gui.set_status(
+                    f"\u0421\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u0435 \u043f\u043e\u0442\u0435\u0440\u044f\u043d\u043e, \u043f\u0435\u0440\u0435\u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435...",
+                    "warning",
+                )
+                try:
+                    await self.client.disconnect()
+                except Exception:
+                    logging.debug("Disconnect after failed health check also failed", exc_info=True)
+                return
 
     async def authorize(self):
         try:

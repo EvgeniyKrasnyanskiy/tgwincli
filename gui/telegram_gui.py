@@ -6,9 +6,11 @@ import datetime
 import platform
 import os
 import logging
+import re
 
 from config.settings import API_ID, API_HASH, PHONE, TRUSTED_CONTACTS, WINDOW_WIDTH, WINDOW_HEIGHT
 from client.telegram_client import TelegramClientManager
+from telethon.errors import MessageEditTimeExpiredError
 from utils.app_icon import set_window_icon
 from utils.tray import create_tray_icon
 from gui.widgets import create_chat_list, create_message_area, create_input_panel, create_status_bar
@@ -38,6 +40,9 @@ class TelegramGUI:
         self.messages_dict = {}
         self.last_message_id = None
         self.blink_timers = {}
+        self.message_blocks = []
+        self.selected_message_id = None
+        self.selected_message_outgoing = False
         self.is_closing = False  # Для хранения таймеров мигания
 
         self.create_widgets()
@@ -54,6 +59,7 @@ class TelegramGUI:
 
         right_frame, self.messages_area = create_message_area(main_frame)
         self.setup_message_copy()
+        self.setup_global_shortcuts()
 
         callbacks = {
             'send': self.send_message,
@@ -68,6 +74,8 @@ class TelegramGUI:
         self.root.after(100, lambda: self.message_entry.focus_set())
 
     def setup_message_copy(self):
+        self.configure_message_tags()
+
         self.message_context_menu = tk.Menu(self.messages_area, tearoff=0)
         self.message_context_menu.add_command(label="\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c", command=self.copy_selected_messages)
         self.message_context_menu.add_command(label="\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0432\u0441\u0451", command=self.copy_all_messages)
@@ -78,9 +86,195 @@ class TelegramGUI:
         self.messages_area.bind("<Control-a>", self.select_all_messages)
         self.messages_area.bind("<Control-A>", self.select_all_messages)
         self.messages_area.bind("<Button-3>", self.show_message_context_menu)
+        self.messages_area.bind("<ButtonRelease-1>", self.on_message_area_click, add="+")
+        self.messages_area.bind("<KeyPress>", self.prevent_messages_area_edit)
+        self.messages_area.bind("<<Cut>>", lambda event: "break")
+        self.messages_area.bind("<<Paste>>", lambda event: "break")
+        self.messages_area.bind("<<Clear>>", lambda event: "break")
+
+    def setup_global_shortcuts(self):
+        self.root.bind_all("<Control-c>", self.handle_global_copy, add="+")
+        self.root.bind_all("<Control-C>", self.handle_global_copy, add="+")
+        self.root.bind_all("<Control-v>", self.handle_global_paste, add="+")
+        self.root.bind_all("<Control-V>", self.handle_global_paste, add="+")
+        self.root.bind_all("<Control-x>", self.handle_global_cut, add="+")
+        self.root.bind_all("<Control-X>", self.handle_global_cut, add="+")
+        self.root.bind_all("<Control-a>", self.handle_global_select_all, add="+")
+        self.root.bind_all("<Control-A>", self.handle_global_select_all, add="+")
+
+    def handle_global_copy(self, event=None):
+        widget = self.root.focus_get()
+        if widget == self.messages_area:
+            return self.copy_selected_messages_event(event)
+        if widget == self.message_entry:
+            self.message_entry.event_generate("<<Copy>>")
+            return "break"
+        return None
+
+    def handle_global_paste(self, event=None):
+        widget = self.root.focus_get()
+        if widget == self.message_entry:
+            self.message_entry.event_generate("<<Paste>>")
+            return "break"
+        return None
+
+    def handle_global_cut(self, event=None):
+        widget = self.root.focus_get()
+        if widget == self.message_entry:
+            self.message_entry.event_generate("<<Cut>>")
+            return "break"
+        return None
+
+    def handle_global_select_all(self, event=None):
+        widget = self.root.focus_get()
+        if widget == self.messages_area:
+            return self.select_all_messages(event)
+        if widget == self.message_entry:
+            self.message_entry.focus_set()
+            self.message_entry.select_range(0, tk.END)
+            self.message_entry.icursor(tk.END)
+            return "break"
+        return None
+
+    def configure_message_tags(self):
+        self.messages_area.tag_configure(
+            "sel",
+            background="#bcdcff",
+            foreground="#102030",
+        )
+        self.messages_area.tag_configure(
+            "message_in_meta",
+            foreground="#5c6f7e",
+            font=("Segoe UI", 9, "bold"),
+            lmargin1=14,
+            lmargin2=14,
+            rmargin=110,
+            spacing1=8,
+        )
+        self.messages_area.tag_configure(
+            "message_in_body",
+            background="#f4f8fb",
+            foreground="#1e2a33",
+            font=("Segoe UI", 11),
+            lmargin1=14,
+            lmargin2=14,
+            rmargin=110,
+            spacing3=10,
+        )
+        self.messages_area.tag_configure(
+            "message_out_meta",
+            foreground="#3d608d",
+            font=("Segoe UI", 9, "bold"),
+            lmargin1=110,
+            lmargin2=110,
+            rmargin=14,
+            justify="right",
+            spacing1=8,
+        )
+        self.messages_area.tag_configure(
+            "message_out_body",
+            background="#e9f3ff",
+            foreground="#173252",
+            font=("Segoe UI", 11),
+            lmargin1=110,
+            lmargin2=110,
+            rmargin=14,
+            justify="right",
+            spacing3=10,
+        )
+        self.messages_area.tag_configure(
+            "message_selected",
+            background="#dcecff",
+            foreground="#102030",
+        )
+        self.messages_area.tag_configure(
+            "message_system",
+            foreground="#5f6b76",
+            font=("Consolas", 10),
+            lmargin1=12,
+            lmargin2=12,
+            rmargin=12,
+            spacing1=4,
+            spacing3=6,
+        )
+        self.messages_area.tag_raise("sel")
+
+    def append_chat_message_to_area(self, sender_name, timestamp, message_text, outgoing=False, edited=False, message_id=None):
+        safe_sender = (sender_name or "Unknown").strip() or "Unknown"
+        safe_body = (message_text or "").strip() or "-"
+        edited_suffix = "  \u00b7 \u0440\u0435\u0434." if edited else ""
+        meta_text = f"{safe_sender}  {timestamp}{edited_suffix}".strip()
+        meta_tag = "message_out_meta" if outgoing else "message_in_meta"
+        body_tag = "message_out_body" if outgoing else "message_in_body"
+
+        self.set_messages_area_state('normal')
+        if self.messages_area.index('end-1c') != '1.0':
+            self.messages_area.insert(tk.END, "\n")
+        meta_start = self.messages_area.index(tk.END)
+        self.messages_area.insert(tk.END, meta_text + "\n", (meta_tag,))
+        meta_end = self.messages_area.index(tk.END)
+        body_start = self.messages_area.index(tk.END)
+        self.messages_area.insert(tk.END, safe_body + "\n", (body_tag,))
+        body_end = self.messages_area.index(tk.END)
+        if message_id is not None:
+            self.message_blocks.append({
+                "message_id": message_id,
+                "outgoing": outgoing,
+                "meta_start": meta_start,
+                "meta_end": meta_end,
+                "body_start": body_start,
+                "body_end": body_end,
+            })
+        self.messages_area.see(tk.END)
+        self.set_messages_area_state('disabled')
 
     def set_messages_area_state(self, state):
-        self.messages_area.configure(state=state)
+        self.messages_area.configure(state='normal')
+
+    def prevent_messages_area_edit(self, event):
+        allowed_navigation = {
+            "Left", "Right", "Up", "Down", "Home", "End",
+            "Prior", "Next", "Shift_L", "Shift_R", "Control_L", "Control_R",
+        }
+        if event.keysym in allowed_navigation:
+            return None
+        if (event.state & 0x4) and event.keysym.lower() in {"c", "a"}:
+            return None
+        return "break"
+
+    def find_message_block_by_index(self, index):
+        for block in reversed(self.message_blocks):
+            if self.messages_area.compare(index, ">=", block["meta_start"]) and self.messages_area.compare(index, "<", block["body_end"]):
+                return block
+        return None
+
+    def highlight_selected_message(self):
+        self.messages_area.tag_remove("message_selected", "1.0", tk.END)
+        if self.selected_message_id is None:
+            return
+        for block in self.message_blocks:
+            if block["message_id"] == self.selected_message_id:
+                self.messages_area.tag_add("message_selected", block["meta_start"], block["body_end"])
+                self.messages_area.tag_raise("sel")
+                return
+
+    def on_message_area_click(self, event):
+        try:
+            click_index = self.messages_area.index(f"@{event.x},{event.y}")
+        except tk.TclError:
+            return None
+        block = self.find_message_block_by_index(click_index)
+        if not block or not block["outgoing"]:
+            self.selected_message_id = None
+            self.selected_message_outgoing = False
+            self.highlight_selected_message()
+            return None
+        self.selected_message_id = block["message_id"]
+        self.selected_message_outgoing = True
+        self.last_message_id = block["message_id"]
+        self.highlight_selected_message()
+        self.set_status("\u0412\u044b\u0431\u0440\u0430\u043d\u043e \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435 \u0434\u043b\u044f \u0440\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f", "neutral")
+        return None
 
     def clear_messages_area(self):
         self.set_messages_area_state('normal')
@@ -89,7 +283,7 @@ class TelegramGUI:
 
     def append_message_to_area(self, message):
         self.set_messages_area_state('normal')
-        self.messages_area.insert(tk.END, message + "\n")
+        self.messages_area.insert(tk.END, message + "\n", ("message_system",))
         self.messages_area.see(tk.END)
         self.set_messages_area_state('disabled')
 
@@ -105,6 +299,17 @@ class TelegramGUI:
         try:
             selected_text = self.messages_area.get("sel.first", "sel.last")
         except tk.TclError:
+            return
+        cleaned_lines = []
+        header_pattern = re.compile(
+            r"^.+\s{2}\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\s+\u00b7\s+\u0440\u0435\u0434\.)?$"
+        )
+        for line in selected_text.splitlines():
+            if header_pattern.match(line.strip()):
+                continue
+            cleaned_lines.append(line)
+        selected_text = "\n".join(cleaned_lines).strip("\n")
+        if not selected_text:
             return
         self.root.clipboard_clear()
         self.root.clipboard_append(selected_text)
@@ -244,6 +449,9 @@ class TelegramGUI:
     async def load_messages(self):
         self.root.after(0, self.clear_messages_area)
         self.messages_dict.clear()
+        self.message_blocks = []
+        self.selected_message_id = None
+        self.selected_message_outgoing = False
 
         msgs = await self.client.get_messages(self.current_chat, limit=50)
         for msg in reversed(msgs):
@@ -275,8 +483,14 @@ class TelegramGUI:
                     else:
                         media_info = "[📎 Медиа]"
 
-                text = f"[{timestamp}] {sender_name}: {message_text} {media_info}{edited_mark}".strip()
-                self.root.after(0, lambda t=text: self.display_message(t))
+                body_text = f"{message_text} {media_info}".strip()
+                is_outgoing = bool(getattr(msg, 'out', False))
+                is_edited = bool(getattr(msg, 'edit_date', None))
+                self.root.after(
+                    0,
+                    lambda sn=sender_name, ts=timestamp, bt=body_text, og=is_outgoing, ed=is_edited, mid=msg_id:
+                    self.display_chat_message(sn, ts, bt, outgoing=og, edited=ed, message_id=mid)
+                )
 
 
     async def mark_as_read(self):
@@ -292,6 +506,9 @@ class TelegramGUI:
 
     def display_message(self, message):
         self.append_message_to_area(message)
+
+    def display_chat_message(self, sender_name, timestamp, message_text, outgoing=False, edited=False, message_id=None):
+        self.append_chat_message_to_area(sender_name, timestamp, message_text, outgoing=outgoing, edited=edited, message_id=message_id)
 
     def send_message(self):
         if not self.client or not self.current_chat:
@@ -313,7 +530,7 @@ class TelegramGUI:
             sent_msg = await self.client.send_message(self.current_chat, message)
             self.last_message_id = getattr(sent_msg, 'id', None)
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.root.after(0, lambda: self.display_message(f"[{timestamp}] \u042f: {message}"))
+            self.root.after(0, lambda mid=self.last_message_id: self.display_chat_message("\u042f", timestamp, message, outgoing=True, message_id=mid))
             self.set_status("\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d", "online")
         except Exception as e:
             logging.exception("\u041e\u0448\u0438\u0431\u043a\u0430 \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0438")
@@ -412,7 +629,9 @@ class TelegramGUI:
             self.show_warning("Выберите чат!")
             return
 
-        if not self.last_message_id:
+        message_id = self.selected_message_id or self.last_message_id
+
+        if not message_id:
             self.show_warning("Нет сообщений для редактирования!")
             return
 
@@ -424,7 +643,7 @@ class TelegramGUI:
 
         if new_text and new_text.strip() and self.loop:
             asyncio.run_coroutine_threadsafe(
-                self.edit_message_async(self.last_message_id, new_text.strip()),
+                self.edit_message_async(message_id, new_text.strip()),
                 self.loop
             )
 
@@ -435,9 +654,16 @@ class TelegramGUI:
                 self.load_messages(), self.loop
             ))
             self.root.after(0, lambda: self.show_info("Сообщение отредактировано!"))
+        except MessageEditTimeExpiredError:
+            error_text = "Редактирование недоступно: Telegram больше не позволяет изменить это старое сообщение."
+            logging.warning(error_text)
+            self.set_status("Сообщение слишком старое для редактирования", "warning")
+            self.root.after(0, lambda msg=error_text: self.show_warning(msg))
         except Exception as e:
             logging.exception("Ошибка редактирования")
-            self.root.after(0, lambda: self.show_error(f"Ошибка редактирования: {e}"))
+            error_text = f"Ошибка редактирования: {e}"
+            self.set_status(error_text, "error")
+            self.root.after(0, lambda msg=error_text: self.show_error(msg))
 
     def play_notification_sound(self):
         if platform.system() == "Windows":
