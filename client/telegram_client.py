@@ -16,7 +16,10 @@ class TelegramClientManager:
         self.handlers_registered = False
         self.retry_delay_seconds = 5
         self.connection_monitor_task = None
-        self.connection_check_interval = 10
+        self.connection_check_interval = 15
+        self.connection_check_timeout = 12
+        self.connection_failures = 0
+        self.max_connection_failures = 3
 
     async def start(self):
         while not self.gui.is_closing:
@@ -42,6 +45,7 @@ class TelegramClientManager:
                     self.handlers_registered = True
 
                 await self.gui.load_dialogs()
+                self.connection_failures = 0
                 self.start_connection_monitor()
                 self.gui.set_status("\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d", "online")
                 await self.client.run_until_disconnected()
@@ -93,20 +97,43 @@ class TelegramClientManager:
                 )
                 return
             try:
-                await asyncio.wait_for(self.client(GetStateRequest()), timeout=8)
+                await asyncio.wait_for(
+                    self.client(GetStateRequest()),
+                    timeout=self.connection_check_timeout,
+                )
+                if self.connection_failures > 0:
+                    self.gui.set_status("\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d", "online")
+                self.connection_failures = 0
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logging.warning("Connection health check failed", exc_info=True)
-                self.gui.set_status(
-                    f"\u0421\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u0435 \u043f\u043e\u0442\u0435\u0440\u044f\u043d\u043e, \u043f\u0435\u0440\u0435\u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435...",
-                    "warning",
+            except asyncio.TimeoutError:
+                self.connection_failures += 1
+                logging.warning(
+                    "Connection health check timed out (%s/%s)",
+                    self.connection_failures,
+                    self.max_connection_failures,
                 )
-                try:
-                    await self.client.disconnect()
-                except Exception:
-                    logging.debug("Disconnect after failed health check also failed", exc_info=True)
-                return
+            except Exception as e:
+                self.connection_failures += 1
+                logging.warning(
+                    "Connection health check failed (%s/%s): %s",
+                    self.connection_failures,
+                    self.max_connection_failures,
+                    e,
+                )
+
+            if self.connection_failures < self.max_connection_failures:
+                continue
+
+            self.gui.set_status(
+                "\u0421\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u0435 \u043f\u043e\u0442\u0435\u0440\u044f\u043d\u043e, \u043f\u0435\u0440\u0435\u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435...",
+                "warning",
+            )
+            try:
+                await self.client.disconnect()
+            except Exception:
+                logging.debug("Disconnect after failed health check also failed", exc_info=True)
+            return
 
     async def authorize(self):
         try:

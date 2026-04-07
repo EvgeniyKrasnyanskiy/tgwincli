@@ -7,14 +7,21 @@ import platform
 import os
 import logging
 import re
+import subprocess
+import webbrowser
 
 from config.settings import API_ID, API_HASH, PHONE, TRUSTED_CONTACTS, WINDOW_WIDTH, WINDOW_HEIGHT
 from client.telegram_client import TelegramClientManager
 from telethon.errors import MessageEditTimeExpiredError
+from utils.media import describe_media, download_media
 from utils.app_icon import set_window_icon
 from utils.tray import create_tray_icon
 from gui.widgets import create_chat_list, create_message_area, create_input_panel, create_status_bar
 from gui.popup import create_popup
+
+
+URL_PATTERN = re.compile(r"(?:(?:https?://)|(?:www\.))[\w\-._~:/?#\[\]@!$&'()*+,;=%]+", re.IGNORECASE)
+EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 
 
 class TelegramGUI:
@@ -43,6 +50,12 @@ class TelegramGUI:
         self.message_blocks = []
         self.selected_message_id = None
         self.selected_message_outgoing = False
+        self.context_message_block = None
+        self.context_link_target = None
+        self.context_email_target = None
+        self.hover_tag_active = None
+        self.current_status_text = ""
+        self.current_status_level = "neutral"
         self.is_closing = False  # Для хранения таймеров мигания
 
         self.create_widgets()
@@ -57,7 +70,7 @@ class TelegramGUI:
         self.chat_listbox = create_chat_list(main_frame)
         self.chat_listbox.bind('<<ListboxSelect>>', self.on_chat_select)
 
-        right_frame, self.messages_area = create_message_area(main_frame)
+        right_frame, self.chat_header_label, self.messages_area = create_message_area(main_frame)
         self.setup_message_copy()
         self.setup_global_shortcuts()
 
@@ -68,7 +81,9 @@ class TelegramGUI:
         }
         self.message_entry = create_input_panel(right_frame, callbacks)
         _, self.status_dot, self.status_label = create_status_bar(self.root)
-        self.set_status("\u0417\u0430\u043f\u0443\u0441\u043a...", "neutral")
+
+        # ЗАМЕНЕНО: "\u0417\u0430\u043f\u0443\u0441\u043a..." -> "Запуск..."
+        self.set_status("Запуск...", "neutral")
 
         # Автофокус
         self.root.after(100, lambda: self.message_entry.focus_set())
@@ -77,15 +92,27 @@ class TelegramGUI:
         self.configure_message_tags()
 
         self.message_context_menu = tk.Menu(self.messages_area, tearoff=0)
-        self.message_context_menu.add_command(label="\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c", command=self.copy_selected_messages)
-        self.message_context_menu.add_command(label="\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0432\u0441\u0451", command=self.copy_all_messages)
-        self.message_context_menu.add_command(label="\u0412\u044b\u0434\u0435\u043b\u0438\u0442\u044c \u0432\u0441\u0451", command=self.select_all_messages)
+        self.message_context_menu.add_command(label="Копировать", command=self.copy_selected_messages)
+        self.message_context_menu.add_command(label="Копировать всё", command=self.copy_all_messages)
+        self.message_context_menu.add_command(label="Выделить всё", command=self.select_all_messages)
+        self.message_context_menu.add_separator()
+        self.message_context_menu.add_command(label="Открыть файл", command=self.open_selected_media)
+        self.message_context_menu.add_command(label="Открыть папку с файлом", command=self.open_selected_media_folder)
+        self.message_context_menu.add_separator()
+        self.message_context_menu.add_command(label="Копировать ссылку", command=self.copy_context_link)
+        self.message_context_menu.add_command(label="Копировать адрес", command=self.copy_context_email)
+        self.open_file_menu_index = 4
+        self.open_folder_menu_index = 5
+        self.copy_link_menu_index = 7
+        self.copy_email_menu_index = 8
 
         self.messages_area.bind("<Control-c>", self.copy_selected_messages_event)
         self.messages_area.bind("<Control-C>", self.copy_selected_messages_event)
         self.messages_area.bind("<Control-a>", self.select_all_messages)
         self.messages_area.bind("<Control-A>", self.select_all_messages)
         self.messages_area.bind("<Button-3>", self.show_message_context_menu)
+        self.messages_area.bind("<Motion>", self.update_hover_state, add="+")
+        self.messages_area.bind("<Leave>", self.clear_hover_state, add="+")
         self.messages_area.bind("<ButtonRelease-1>", self.on_message_area_click, add="+")
         self.messages_area.bind("<KeyPress>", self.prevent_messages_area_edit)
         self.messages_area.bind("<<Cut>>", lambda event: "break")
@@ -162,6 +189,16 @@ class TelegramGUI:
             spacing3=10,
         )
         self.messages_area.tag_configure(
+            "message_in_body_media",
+            background="#f4f8fb",
+            foreground="#0b63b6",
+            font=("Segoe UI", 11, "underline"),
+            lmargin1=14,
+            lmargin2=14,
+            rmargin=110,
+            spacing3=10,
+        )
+        self.messages_area.tag_configure(
             "message_out_meta",
             foreground="#3d608d",
             font=("Segoe UI", 9, "bold"),
@@ -183,9 +220,35 @@ class TelegramGUI:
             spacing3=10,
         )
         self.messages_area.tag_configure(
+            "message_out_body_media",
+            background="#e9f3ff",
+            foreground="#0a58a8",
+            font=("Segoe UI", 11, "underline"),
+            lmargin1=110,
+            lmargin2=110,
+            rmargin=14,
+            justify="right",
+            spacing3=10,
+        )
+        self.messages_area.tag_configure(
             "message_selected",
             background="#dcecff",
             foreground="#102030",
+        )
+        self.messages_area.tag_configure(
+            "message_link",
+            foreground="#0b63b6",
+            underline=1,
+        )
+        self.messages_area.tag_configure(
+            "message_email",
+            foreground="#0b63b6",
+            underline=1,
+        )
+        self.messages_area.tag_configure(
+            "message_hover",
+            foreground="#0050c8",
+            underline=1,
         )
         self.messages_area.tag_configure(
             "message_system",
@@ -197,12 +260,15 @@ class TelegramGUI:
             spacing1=4,
             spacing3=6,
         )
+        self.messages_area.tag_raise("message_link")
+        self.messages_area.tag_raise("message_email")
+        self.messages_area.tag_raise("message_hover")
         self.messages_area.tag_raise("sel")
 
-    def append_chat_message_to_area(self, sender_name, timestamp, message_text, outgoing=False, edited=False, message_id=None):
+    def append_chat_message_to_area(self, sender_name, timestamp, message_text, outgoing=False, edited=False, message_id=None, media_path=None):
         safe_sender = (sender_name or "Unknown").strip() or "Unknown"
         safe_body = (message_text or "").strip() or "-"
-        edited_suffix = "  \u00b7 \u0440\u0435\u0434." if edited else ""
+        edited_suffix = "  · ред." if edited else ""
         meta_text = f"{safe_sender}  {timestamp}{edited_suffix}".strip()
         meta_tag = "message_out_meta" if outgoing else "message_in_meta"
         body_tag = "message_out_body" if outgoing else "message_in_body"
@@ -216,6 +282,7 @@ class TelegramGUI:
         body_start = self.messages_area.index(tk.END)
         self.messages_area.insert(tk.END, safe_body + "\n", (body_tag,))
         body_end = self.messages_area.index(tk.END)
+        self.apply_interactive_tags(body_start, safe_body, media_path)
         if message_id is not None:
             self.message_blocks.append({
                 "message_id": message_id,
@@ -224,9 +291,26 @@ class TelegramGUI:
                 "meta_end": meta_end,
                 "body_start": body_start,
                 "body_end": body_end,
+                "media_path": media_path,
             })
         self.messages_area.see(tk.END)
         self.set_messages_area_state('disabled')
+
+    def apply_interactive_tags(self, body_start, body_text, media_path=None):
+        for match in URL_PATTERN.finditer(body_text):
+            start_index = f"{body_start}+{match.start()}c"
+            end_index = f"{body_start}+{match.end()}c"
+            self.messages_area.tag_add("message_link", start_index, end_index)
+        for match in EMAIL_PATTERN.finditer(body_text):
+            start_index = f"{body_start}+{match.start()}c"
+            end_index = f"{body_start}+{match.end()}c"
+            self.messages_area.tag_add("message_email", start_index, end_index)
+        if media_path:
+            media_match = re.search(r"\[[^\]]+\]$", body_text)
+            if media_match:
+                start_index = f"{body_start}+{media_match.start()}c"
+                end_index = f"{body_start}+{media_match.end()}c"
+                self.messages_area.tag_add("message_link", start_index, end_index)
 
     def set_messages_area_state(self, state):
         self.messages_area.configure(state='normal')
@@ -258,11 +342,68 @@ class TelegramGUI:
                 self.messages_area.tag_raise("sel")
                 return
 
+    def update_hover_state(self, event):
+        try:
+            hover_index = self.messages_area.index(f"@{event.x},{event.y}")
+        except tk.TclError:
+            return None
+        line, column = hover_index.split('.')
+        column = int(column)
+        line_text = self.messages_area.get(f"{line}.0", f"{line}.end")
+
+        for pattern, tag_name in ((URL_PATTERN, "message_link"), (EMAIL_PATTERN, "message_email")):
+            for match in pattern.finditer(line_text):
+                if match.start() <= column < match.end():
+                    start_index = f"{line}.0+{match.start()}c"
+                    end_index = f"{line}.0+{match.end()}c"
+                    self.messages_area.tag_remove("message_hover", "1.0", tk.END)
+                    self.messages_area.tag_add("message_hover", start_index, end_index)
+                    self.hover_tag_active = tag_name
+                    self.messages_area.config(cursor="hand2")
+                    return None
+
+        media_match = re.search(r"\[[^\]]+\]$", line_text)
+        if media_match and media_match.start() <= column < media_match.end():
+            start_index = f"{line}.0+{media_match.start()}c"
+            end_index = f"{line}.0+{media_match.end()}c"
+            self.messages_area.tag_remove("message_hover", "1.0", tk.END)
+            self.messages_area.tag_add("message_hover", start_index, end_index)
+            self.hover_tag_active = "message_link"
+            self.messages_area.config(cursor="hand2")
+            return None
+
+        self.clear_hover_state()
+        return None
+
+    def clear_hover_state(self, event=None):
+        self.hover_tag_active = None
+        self.messages_area.tag_remove("message_hover", "1.0", tk.END)
+        self.messages_area.config(cursor="xterm")
+        return None
+
     def on_message_area_click(self, event):
         try:
             click_index = self.messages_area.index(f"@{event.x},{event.y}")
         except tk.TclError:
             return None
+
+        link_target = self.get_line_target(click_index, URL_PATTERN)
+        if link_target:
+            self.open_context_link(link_target)
+            return "break"
+
+        email_target = self.get_line_target(click_index, EMAIL_PATTERN)
+        if email_target:
+            self.context_email_target = email_target
+            self.copy_context_email()
+            return "break"
+
+        media_block = self.get_media_block_for_index(click_index)
+        if media_block:
+            self.context_message_block = media_block
+            self.open_selected_media()
+            return "break"
+
         block = self.find_message_block_by_index(click_index)
         if not block or not block["outgoing"]:
             self.selected_message_id = None
@@ -273,7 +414,7 @@ class TelegramGUI:
         self.selected_message_outgoing = True
         self.last_message_id = block["message_id"]
         self.highlight_selected_message()
-        self.set_status("\u0412\u044b\u0431\u0440\u0430\u043d\u043e \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435 \u0434\u043b\u044f \u0440\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f", "neutral")
+        self.set_status("Выбрано сообщение для редактирования", "neutral")
         return None
 
     def clear_messages_area(self):
@@ -301,8 +442,10 @@ class TelegramGUI:
         except tk.TclError:
             return
         cleaned_lines = []
+
+        # ЗАМЕНЕНО: \u00b7 -> · (точка-разделитель) и \u0440\u0435\u0434\. -> ред.
         header_pattern = re.compile(
-            r"^.+\s{2}\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\s+\u00b7\s+\u0440\u0435\u0434\.)?$"
+            r"^.+\s{2}\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\s+·\s+ред\.)?$"
         )
         for line in selected_text.splitlines():
             if header_pattern.match(line.strip()):
@@ -332,9 +475,156 @@ class TelegramGUI:
         self.messages_area.see(tk.INSERT)
         return "break"
 
+    def get_line_target(self, index, pattern):
+        if not index:
+            return None
+        line, column = index.split('.')
+        column = int(column)
+        line_text = self.messages_area.get(f"{line}.0", f"{line}.end")
+        for match in pattern.finditer(line_text):
+            if match.start() <= column < match.end():
+                return match.group(0).rstrip(').,;]')
+        return None
+
+    def copy_context_link(self):
+        if not self.context_link_target:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.context_link_target)
+        self.show_brief_status("Скопировано!", "neutral")
+
+    def copy_context_email(self):
+        if not self.context_email_target:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.context_email_target)
+        self.show_brief_status("Скопировано!", "neutral")
+
+    def open_context_link(self, url):
+        if not url:
+            return
+        target = url if re.match(r"^https?://", url, re.IGNORECASE) else f"https://{url}"
+        webbrowser.open(target)
+        self.show_brief_status("Ссылка открыта", "neutral", duration_ms=350, restore_text="Подключен", restore_level="online")
+
     def show_message_context_menu(self, event):
         self.messages_area.focus_set()
+        try:
+            click_index = self.messages_area.index(f"@{event.x},{event.y}")
+        except tk.TclError:
+            click_index = None
+        self.context_message_block = self.get_media_block_for_index(click_index) if click_index else None
+        self.context_link_target = self.get_line_target(click_index, URL_PATTERN) if click_index else None
+        self.context_email_target = self.get_line_target(click_index, EMAIL_PATTERN) if click_index else None
+        media_state = tk.NORMAL if self.context_message_block else tk.DISABLED
+        link_state = tk.NORMAL if self.context_link_target else tk.DISABLED
+        email_state = tk.NORMAL if self.context_email_target else tk.DISABLED
+        self.message_context_menu.entryconfigure(self.open_file_menu_index, state=media_state)
+        self.message_context_menu.entryconfigure(self.open_folder_menu_index, state=media_state)
+        self.message_context_menu.entryconfigure(self.copy_link_menu_index, state=link_state)
+        self.message_context_menu.entryconfigure(self.copy_email_menu_index, state=email_state)
         self.message_context_menu.tk_popup(event.x_root, event.y_root)
+
+    def get_media_block_for_index(self, index):
+        block = self.find_message_block_by_index(index)
+        if block and block.get("media_path"):
+            return block
+        return None
+
+    async def download_media_for_block(self, block):
+        message_id = block.get("message_id")
+        message = self.messages_dict.get(message_id)
+        if not message:
+            self.root.after(0, lambda: self.show_warning("Не удалось найти сообщение с файлом."))
+            return None
+        sender_name = "Я" if block.get("outgoing") else (
+            getattr(getattr(message, "sender", None), "first_name", "Unknown")
+            if getattr(message, "sender", None) else "Unknown"
+        )
+        timestamp = message.date.strftime("%Y-%m-%d %H:%M:%S") if getattr(message, "date", None) else ""
+        self.set_status("Скачивание файла...", "busy")
+        media_result = await download_media(self.client, message, sender_name, timestamp)
+        media_path = media_result.get("path")
+        if not media_path or not os.path.exists(media_path):
+            self.set_status("Ошибка скачивания файла", "error")
+            self.root.after(0, lambda: self.show_error("Не удалось скачать файл из сообщения."))
+            return None
+        block["media_path"] = media_path
+        return media_path
+
+    def _open_media_path(self, media_path):
+        try:
+            os.startfile(media_path)
+            self.show_brief_status("Открыт файл из чата", "neutral", duration_ms=350, restore_text="Подключен", restore_level="online")
+        except OSError as e:
+            self.show_error(f"Не удалось открыть файл: {e}")
+
+    def _open_media_folder_path(self, media_path):
+        try:
+            subprocess.Popen(["explorer", "/select,", media_path])
+            self.show_brief_status("Открыта папка с файлом", "neutral", duration_ms=350, restore_text="Подключен", restore_level="online")
+        except OSError as e:
+            self.show_error(f"Не удалось открыть папку: {e}")
+
+    def open_selected_media(self):
+        block = self.context_message_block or next((b for b in self.message_blocks if b.get("message_id") == self.selected_message_id), None)
+        if not block:
+            self.show_warning("В этом сообщении нет файла.")
+            return
+        media_path = block.get("media_path")
+        if media_path:
+            media_path = os.path.abspath(media_path)
+        if media_path and os.path.exists(media_path):
+            self._open_media_path(media_path)
+            return
+        if self.loop:
+            future = asyncio.run_coroutine_threadsafe(self.download_media_for_block(block), self.loop)
+            def done_callback(fut):
+                try:
+                    downloaded_path = fut.result()
+                except Exception as e:
+                    self.root.after(0, lambda err=e: self.show_error(f"Не удалось скачать файл: {err}"))
+                    return
+                if downloaded_path:
+                    self.root.after(0, lambda p=downloaded_path: self._open_media_path(os.path.abspath(p)))
+            future.add_done_callback(done_callback)
+            return
+        self.show_warning("Не удалось скачать файл из сообщения.")
+
+    def open_selected_media_folder(self):
+        block = self.context_message_block or next((b for b in self.message_blocks if b.get("message_id") == self.selected_message_id), None)
+        if not block:
+            self.show_warning("В этом сообщении нет файла.")
+            return
+        media_path = block.get("media_path")
+        if media_path:
+            media_path = os.path.abspath(media_path)
+        if media_path and os.path.exists(media_path):
+            self._open_media_folder_path(media_path)
+            return
+        if self.loop:
+            future = asyncio.run_coroutine_threadsafe(self.download_media_for_block(block), self.loop)
+            def done_callback(fut):
+                try:
+                    downloaded_path = fut.result()
+                except Exception as e:
+                    self.root.after(0, lambda err=e: self.show_error(f"Не удалось скачать файл: {err}"))
+                    return
+                if downloaded_path:
+                    self.root.after(0, lambda p=downloaded_path: self._open_media_folder_path(os.path.abspath(p)))
+            future.add_done_callback(done_callback)
+            return
+        self.show_warning("Не удалось открыть папку с файлом.")
+
+    def show_brief_status(self, text, level="neutral", duration_ms=450, restore_text=None, restore_level=None):
+        previous_text = restore_text or self.current_status_text or "Подключен"
+        previous_level = restore_level or self.current_status_level or "online"
+        self.set_status(text, level)
+        self.root.after(
+            duration_ms,
+            lambda prev_text=previous_text, prev_level=previous_level:
+            self.set_status(prev_text, prev_level) if not self.is_closing else None,
+        )
 
     def set_status(self, text, level="neutral"):
         if self.is_closing:
@@ -342,6 +632,8 @@ class TelegramGUI:
         self.root.after(0, lambda: self._apply_status(text, level))
 
     def _apply_status(self, text, level):
+        self.current_status_text = text
+        self.current_status_level = level
         palette = {
             "neutral": ("#6c7a86", "#2f3b45", "#eef3f7"),
             "connecting": ("#d48806", "#5f3b00", "#fff7e6"),
@@ -412,6 +704,18 @@ class TelegramGUI:
             await asyncio.sleep(0.1)
         return password_container[0]
 
+    def update_chat_header(self, chat=None):
+        active_chat = chat or self.current_chat
+        if not active_chat:
+            self.chat_header_label.config(text="История сообщений:")
+            return
+        chat_name = getattr(active_chat, "name", None) or getattr(
+            getattr(active_chat, "entity", None),
+            "title",
+            str(getattr(getattr(active_chat, "entity", None), "id", "")),
+        )
+        self.chat_header_label.config(text=f"Чат с {chat_name}")
+
     async def load_dialogs(self):
         all_dialogs = await self.client.get_dialogs(limit=50)
         self.dialogs = [d for d in all_dialogs if getattr(d.entity, 'id', None) in TRUSTED_CONTACTS]
@@ -425,6 +729,27 @@ class TelegramGUI:
             display_name = ("* " if unread > 0 else "") + name
             self.root.after(0, lambda n=display_name: self.chat_listbox.insert(tk.END, n))
 
+        self.root.after(0, self.apply_chat_list_highlight)
+        if self.dialogs and not self.current_chat:
+            self.root.after(0, self.select_first_chat)
+
+    def select_first_chat(self):
+        if not self.dialogs or self.current_chat:
+            return
+        self.chat_listbox.selection_clear(0, tk.END)
+        self.chat_listbox.select_set(0)
+        self.chat_listbox.activate(0)
+        self.on_chat_select(None)
+
+    def apply_chat_list_highlight(self):
+        current_chat_id = getattr(getattr(self.current_chat, "entity", self.current_chat), "id", None)
+        for index, dialog in enumerate(self.dialogs):
+            dialog_id = getattr(dialog.entity, "id", None)
+            if dialog_id == current_chat_id:
+                self.chat_listbox.itemconfig(index, bg="#d9ecff", fg="#12314d", selectbackground="#c3e0ff", selectforeground="#0f2b45")
+            else:
+                self.chat_listbox.itemconfig(index, bg="white", fg="#1f2a33", selectbackground="#d9ecff", selectforeground="#12314d")
+
     def update_unread_marks(self):
         self.chat_listbox.delete(0, tk.END)
         for dialog in self.dialogs:
@@ -434,6 +759,7 @@ class TelegramGUI:
             )
             display_name = ("* " if unread > 0 else "") + name
             self.chat_listbox.insert(tk.END, display_name)
+        self.apply_chat_list_highlight()
 
     def on_chat_select(self, event):
         selection = self.chat_listbox.curselection()
@@ -441,6 +767,8 @@ class TelegramGUI:
             return
 
         self.current_chat = self.dialogs[selection[0]]
+        self.apply_chat_list_highlight()
+        self.update_chat_header()
 
         if self.loop:
             asyncio.run_coroutine_threadsafe(self.load_messages(), self.loop)
@@ -466,32 +794,22 @@ class TelegramGUI:
                 )
                 timestamp = msg.date.strftime("%Y-%m-%d %H:%M:%S") if getattr(msg, 'date', None) else ''
                 message_text = getattr(msg, 'message', '')
-                edited_mark = " (ред.)" if getattr(msg, 'edit_date', None) else ""
 
                 media_info = ""
+                media_path = None
                 if msg.media:
-                    if msg.photo:
-                        media_info = "[📷 Фото]"
-                    elif msg.document:
-                        media_info = "[📄 Файл]"
-                    elif msg.video:
-                        media_info = "[🎥 Видео]"
-                    elif msg.voice:
-                        media_info = "[🎤 Голосовое]"
-                    elif msg.audio:
-                        media_info = "[🎵 Аудио]"
-                    else:
-                        media_info = "[📎 Медиа]"
+                    media_result = describe_media(msg, sender_name, timestamp)
+                    media_info = media_result.get("text", "")
+                    media_path = media_result.get("path")
 
                 body_text = f"{message_text} {media_info}".strip()
                 is_outgoing = bool(getattr(msg, 'out', False))
                 is_edited = bool(getattr(msg, 'edit_date', None))
                 self.root.after(
                     0,
-                    lambda sn=sender_name, ts=timestamp, bt=body_text, og=is_outgoing, ed=is_edited, mid=msg_id:
-                    self.display_chat_message(sn, ts, bt, outgoing=og, edited=ed, message_id=mid)
+                    lambda sn=sender_name, ts=timestamp, bt=body_text, og=is_outgoing, ed=is_edited, mid=msg_id, mp=media_path:
+                    self.display_chat_message(sn, ts, bt, outgoing=og, edited=ed, message_id=mid, media_path=mp)
                 )
-
 
     async def mark_as_read(self):
         """Отмечает все сообщения в текущем чате как прочитанные"""
@@ -507,8 +825,8 @@ class TelegramGUI:
     def display_message(self, message):
         self.append_message_to_area(message)
 
-    def display_chat_message(self, sender_name, timestamp, message_text, outgoing=False, edited=False, message_id=None):
-        self.append_chat_message_to_area(sender_name, timestamp, message_text, outgoing=outgoing, edited=edited, message_id=message_id)
+    def display_chat_message(self, sender_name, timestamp, message_text, outgoing=False, edited=False, message_id=None, media_path=None):
+        self.append_chat_message_to_area(sender_name, timestamp, message_text, outgoing=outgoing, edited=edited, message_id=message_id, media_path=media_path)
 
     def send_message(self):
         if not self.client or not self.current_chat:
@@ -520,7 +838,7 @@ class TelegramGUI:
             return
 
         self.message_entry.delete(0, tk.END)
-        self.set_status("\u041e\u0442\u043f\u0440\u0430\u0432\u043a\u0430 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f...", "busy")
+        self.set_status("Отправка сообщения...", "busy")
 
         if self.loop:
             asyncio.run_coroutine_threadsafe(self.send_message_async(message), self.loop)
@@ -530,12 +848,12 @@ class TelegramGUI:
             sent_msg = await self.client.send_message(self.current_chat, message)
             self.last_message_id = getattr(sent_msg, 'id', None)
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.root.after(0, lambda mid=self.last_message_id: self.display_chat_message("\u042f", timestamp, message, outgoing=True, message_id=mid))
-            self.set_status("\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d", "online")
+            self.root.after(0, lambda mid=self.last_message_id: self.display_chat_message("Я", timestamp, message, outgoing=True, message_id=mid, media_path=None))
+            self.set_status("Подключен", "online")
         except Exception as e:
-            logging.exception("\u041e\u0448\u0438\u0431\u043a\u0430 \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0438")
-            self.set_status(f"\u041e\u0448\u0438\u0431\u043a\u0430 \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0438: {e}", "error")
-            self.root.after(0, lambda: self.show_error(f"\u041e\u0448\u0438\u0431\u043a\u0430 \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0438: {e}"))
+            logging.exception("Ошибка отправки")
+            self.set_status(f"Ошибка отправки: {e}", "error")
+            self.root.after(0, lambda: self.show_error(f"Ошибка отправки: {e}"))
 
     def attach_file(self):
         if not self.client or not self.current_chat:
@@ -560,43 +878,35 @@ class TelegramGUI:
         try:
             filename = os.path.basename(filepath)
             file_size = os.path.getsize(filepath)
-            self.set_status(f"\u041e\u0442\u043f\u0440\u0430\u0432\u043a\u0430 \u0444\u0430\u0439\u043b\u0430: {filename}", "busy")
+            self.set_status(f"Отправка файла: {filename}", "busy")
 
-            # Показываем начало отправки
             self.root.after(0, lambda: self.display_message(f"📤 Отправка: {filename} ({file_size // 1024} KB)"))
 
-            # Прогресс-бар
-            progress_text = f"⏳ Загрузка: 0%"
-            self.root.after(0, lambda: self.display_message(progress_text))
-
-            # Функция обратного вызова для прогресса
             def progress_callback(current, total):
                 percent = int((current / total) * 100)
                 bar_length = 20
                 filled = int(bar_length * current / total)
                 bar = '█' * filled + '░' * (bar_length - filled)
                 progress_msg = f"⏳ {bar} {percent}%"
-
-                # Обновляем последнюю строку
                 self.root.after(0, lambda: self.update_last_message(progress_msg))
 
-            # Отправка с прогрессом
             await self.client.send_file(
                 self.current_chat,
                 filepath,
                 progress_callback=progress_callback
             )
 
-            # Удаляем строку прогресса и показываем успех
             self.root.after(0, lambda: self.remove_last_message())
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.root.after(0, lambda: self.display_message(f"[{timestamp}] Я: ✅ Отправлен файл: {filename}"))
+            self.set_status("Подключен", "online")
 
         except Exception as e:
             logging.exception("Ошибка отправки файла")
             self.root.after(0, lambda: self.remove_last_message())
             self.root.after(0, lambda: self.display_message(f"❌ Ошибка отправки: {filename}"))
             self.root.after(0, lambda: self.show_error(f"Ошибка отправки файла: {e}"))
+            self.set_status("Ошибка отправки", "error")
 
     def update_last_message(self, new_text):
         """Обновляет последнюю строку в области сообщений"""

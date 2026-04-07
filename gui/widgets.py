@@ -1,28 +1,27 @@
 import tkinter as tk
 from tkinter import scrolledtext, ttk
 
-
 def bind_entry_context_menu(entry):
     context_menu = tk.Menu(entry, tearoff=0)
     context_menu.add_command(
-        label="\u0412\u044b\u0440\u0435\u0437\u0430\u0442\u044c",
+        label="Вырезать",
         command=lambda: entry.event_generate("<<Cut>>"),
     )
     context_menu.add_command(
-        label="\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c",
+        label="Копировать",
         command=lambda: entry.event_generate("<<Copy>>"),
     )
     context_menu.add_command(
-        label="\u0412\u0441\u0442\u0430\u0432\u0438\u0442\u044c",
+        label="Вставить",
         command=lambda: entry.event_generate("<<Paste>>"),
     )
     context_menu.add_command(
-        label="\u0423\u0434\u0430\u043b\u0438\u0442\u044c",
+        label="Удалить",
         command=lambda: entry.delete("sel.first", "sel.last") if entry.selection_present() else None,
     )
     context_menu.add_separator()
     context_menu.add_command(
-        label="\u0412\u044b\u0434\u0435\u043b\u0438\u0442\u044c \u0432\u0441\u0435",
+        label="Выделить всё",
         command=lambda: (entry.focus_set(), entry.select_range(0, tk.END), entry.icursor(tk.END)),
     )
 
@@ -68,11 +67,23 @@ def create_chat_list(parent):
 
     tk.Label(
         frame,
-        text="\u0421\u043f\u0438\u0441\u043e\u043a \u043a\u043e\u043d\u0442\u0430\u043a\u0442\u043e\u0432:",
+        text="Список контактов:",
         font=("Arial", 12, "bold"),
-    ).pack()
+    )
 
-    listbox = tk.Listbox(frame, width=25, font=("Arial", 11, "bold"))
+    listbox = tk.Listbox(
+        frame,
+        width=25,
+        font=("Arial", 11, "bold"),
+        activestyle="none",
+        selectbackground="#d9ecff",
+        selectforeground="#12314d",
+        highlightthickness=1,
+        highlightbackground="#c4d7e6",
+        relief=tk.FLAT,
+        bd=0,
+        exportselection=False,
+    )
     listbox.pack(fill=tk.BOTH, expand=True)
 
     return listbox
@@ -82,11 +93,14 @@ def create_message_area(parent):
     frame = tk.Frame(parent)
     frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-    tk.Label(
+    header_label = tk.Label(
         frame,
-        text="\u0418\u0441\u0442\u043e\u0440\u0438\u044f \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0439:",
+        text="История сообщений:",
         font=("Arial", 12, "bold"),
-    ).pack()
+        anchor="center",
+        justify=tk.CENTER,
+    )
+    header_label.pack(fill=tk.X)
 
     messages_area = scrolledtext.ScrolledText(
         frame,
@@ -103,7 +117,7 @@ def create_message_area(parent):
     )
     messages_area.pack(fill=tk.BOTH, expand=True, pady=5)
 
-    return frame, messages_area
+    return frame, header_label, messages_area
 
 
 def create_input_panel(parent, callbacks):
@@ -117,27 +131,33 @@ def create_input_panel(parent, callbacks):
 
     tk.Button(
         bottom_frame,
-        text="\u041e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c",
+        text="Отправить",
         command=callbacks["send"],
         bg="#0088cc",
         fg="white",
-        font=("Arial", 10),
+        font=("Arial", 11, "bold"),
+        width=11,
+        padx=8,
+        pady=4,
     ).pack(side=tk.LEFT, padx=2)
+    
     tk.Button(
         bottom_frame,
-        text="\U0001F4CE \u0424\u0430\u0439\u043b",
+        text="Файл",
         command=callbacks["attach"],
         bg="#00aa00",
         fg="white",
         font=("Arial", 10),
     ).pack(side=tk.LEFT, padx=2)
+    
     tk.Button(
         bottom_frame,
-        text="\u270F\uFE0F \u0420\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u0442\u044c",
+        text="Ред.",
         command=callbacks["edit"],
         bg="#ff9800",
         fg="white",
         font=("Arial", 10),
+        width=6,
     ).pack(side=tk.LEFT, padx=2)
 
     return message_entry
@@ -160,12 +180,12 @@ def create_status_bar(parent):
     frame = tk.Frame(parent, bg="#eef3f7", bd=1, relief=tk.SOLID)
     frame.pack(fill=tk.X, side=tk.BOTTOM)
 
-    status_dot = tk.Label(frame, text="\u25cf", bg="#eef3f7", fg="#6c7a86", font=("Arial", 10, "bold"))
+    status_dot = tk.Label(frame, text="●", bg="#eef3f7", fg="#6c7a86", font=("Arial", 10, "bold"))
     status_dot.pack(side=tk.LEFT, padx=(10, 6), pady=4)
 
     status_label = tk.Label(
         frame,
-        text="\u041d\u0435 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d",
+        text="Не подключено",
         bg="#eef3f7",
         fg="#2f3b45",
         anchor="w",

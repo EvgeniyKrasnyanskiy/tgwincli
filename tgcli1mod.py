@@ -82,7 +82,7 @@ class TelegramGUI:
         left_frame = tk.Frame(main_frame, width=200)
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, padx=(0, 5))
 
-        tk.Label(left_frame, text="Список контактов:", font=("Arial", 10, "bold")).pack()
+        tk.Label(left_frame, text="Контакты:", font=("Arial", 10, "bold")).pack()
 
         self.chat_listbox = tk.Listbox(left_frame, width=25)
         self.chat_listbox.pack(fill=tk.BOTH, expand=True)
@@ -123,7 +123,7 @@ class TelegramGUI:
                                     bg="#00aa00", fg="white")
         self.attach_btn.pack(side=tk.LEFT, padx=2)
 
-        self.edit_btn = tk.Button(bottom_frame, text="✏️ Редактировать",
+        self.edit_btn = tk.Button(bottom_frame, text="✏️ Ред.",
                                   command=self.edit_last_message,
                                   bg="#ff9800", fg="white")
         self.edit_btn.pack(side=tk.LEFT, padx=2)
