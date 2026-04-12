@@ -1,11 +1,21 @@
 import asyncio
 import logging
 
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, connection
 from telethon.tl.functions.updates import GetStateRequest
 
 from client.handlers import EventHandlers
-from config.settings import API_HASH, API_ID, PHONE
+from config.settings import (
+    API_HASH,
+    API_ID,
+    PHONE,
+    PROXY_HOST,
+    PROXY_MODE,
+    PROXY_PASSWORD,
+    PROXY_PORT,
+    PROXY_SECRET,
+    PROXY_USERNAME,
+)
 
 
 class TelegramClientManager:
@@ -21,53 +31,99 @@ class TelegramClientManager:
         self.connection_failures = 0
         self.max_connection_failures = 3
 
+    def _build_client_args(self):
+        mode = (PROXY_MODE or "none").strip().lower()
+        if mode in ("", "none", "off", "direct"):
+            logging.info("Proxy disabled, using direct Telegram connection.")
+            return {}
+
+        if mode in ("socks", "socks5"):
+            import socks
+
+            proxy = (socks.SOCKS5, PROXY_HOST, PROXY_PORT)
+            if PROXY_USERNAME or PROXY_PASSWORD:
+                proxy = (
+                    socks.SOCKS5,
+                    PROXY_HOST,
+                    PROXY_PORT,
+                    True,
+                    PROXY_USERNAME,
+                    PROXY_PASSWORD,
+                )
+
+            logging.info("Initializing through SOCKS5 proxy %s:%s...", PROXY_HOST, PROXY_PORT)
+            return {"proxy": proxy}
+
+        if mode in ("mtproto", "mtproxy"):
+            if not PROXY_SECRET:
+                raise ValueError("PROXY_SECRET is required for MTProto mode")
+
+            logging.info("Initializing through MTProto proxy %s:%s...", PROXY_HOST, PROXY_PORT)
+            return {
+                "connection": connection.ConnectionTcpMTProxyRandomizedIntermediate,
+                "proxy": (PROXY_HOST, PROXY_PORT, PROXY_SECRET),
+            }
+
+        raise ValueError(f"Unsupported PROXY_MODE: {PROXY_MODE}")
+
     async def start(self):
         while not self.gui.is_closing:
             try:
                 if self.client is None:
-                    logging.info(f"Creating Telegram client with API_ID={API_ID}, PHONE={PHONE}")
-                    self.client = TelegramClient("session_name", API_ID, API_HASH)
+                    client_args = self._build_client_args()
+                    self.client = TelegramClient(
+                        "client_session",
+                        API_ID,
+                        API_HASH,
+                        **client_args,
+                    )
+
                     self.gui.client = self.client
 
-                self.gui.set_status("\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435 \u043a Telegram...", "connecting")
-                logging.info("Connecting to Telegram...")
-                await self.client.connect()
-                logging.info("Connected successfully")
+                self.gui.set_status("Подключение к Telegram...", "connecting")
 
+                # ПОДКЛЮЧАЕМСЯ ТОЛЬКО ОДИН РАЗ
+                if not self.client.is_connected():
+                    await self.client.connect()
+
+                logging.info("Successfully connected to Telegram")
+
+                # Проверка авторизации
                 if not await self.client.is_user_authorized():
-                    self.gui.set_status("\u041e\u0436\u0438\u0434\u0430\u043d\u0438\u0435 \u043a\u043e\u0434\u0430 \u0432\u0445\u043e\u0434\u0430...", "connecting")
+                    self.gui.set_status("Ожидание кода входа...", "connecting")
                     await self.authorize()
                 else:
                     logging.info("User is already authorized")
 
+                # Регистрация обработчиков (событий)
                 if not self.handlers_registered:
                     self.register_handlers()
                     self.handlers_registered = True
 
+                # Загрузка интерфейса
                 await self.gui.load_dialogs()
                 self.connection_failures = 0
                 self.start_connection_monitor()
-                self.gui.set_status("\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d", "online")
+
+                self.gui.set_status("Подключен", "online")
+
+                # Важно: ждем, пока клиент работает
                 await self.client.run_until_disconnected()
-                await self.stop_connection_monitor()
 
-                if self.gui.is_closing:
-                    break
-
-                logging.warning("Telegram client disconnected")
-                self.gui.set_status(
-                    f"\u0421\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u0435 \u043f\u043e\u0442\u0435\u0440\u044f\u043d\u043e, \u043f\u043e\u0432\u0442\u043e\u0440 \u0447\u0435\u0440\u0435\u0437 {self.retry_delay_seconds} \u0441...",
-                    "warning",
-                )
             except Exception as e:
                 if self.gui.is_closing:
                     break
                 logging.exception("Error in client loop")
                 self.gui.set_status(
-                    f"\u041d\u0435\u0442 \u0441\u0435\u0442\u0438 / Telegram \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d, \u043f\u043e\u0432\u0442\u043e\u0440 \u0447\u0435\u0440\u0435\u0437 {self.retry_delay_seconds} \u0441...",
-                    "error",
+                    f"Ошибка сети: повтор через {self.retry_delay_seconds} сек...",
+                    "error"
                 )
-                await self.stop_connection_monitor()
+                # Обязательно очищаем клиента при жесткой ошибке
+                if self.client:
+                    await self.client.disconnect()
+                    self.client = None
+
+            await self.stop_connection_monitor()
             await asyncio.sleep(self.retry_delay_seconds)
 
     def start_connection_monitor(self):

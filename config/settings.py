@@ -8,6 +8,14 @@ API_ID = int(os.getenv("API_ID", 0))
 API_HASH = os.getenv("API_HASH", "")
 PHONE = os.getenv("PHONE", "")
 
+# Proxy settings
+PROXY_MODE = os.getenv("PROXY_MODE", "none").strip().lower()
+PROXY_HOST = os.getenv("PROXY_HOST", "127.0.0.1").strip()
+PROXY_PORT = int(os.getenv("PROXY_PORT", "10808"))
+PROXY_USERNAME = os.getenv("PROXY_USERNAME", "").strip()
+PROXY_PASSWORD = os.getenv("PROXY_PASSWORD", "").strip()
+PROXY_SECRET = os.getenv("PROXY_SECRET", "").strip()
+
 # Контакты
 TRUSTED_CONTACTS = os.getenv("TRUSTED_CONTACTS", "")
 TRUSTED_CONTACTS = [int(x.strip()) for x in TRUSTED_CONTACTS.split(",") if x.strip().isdigit()]
