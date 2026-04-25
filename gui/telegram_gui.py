@@ -976,12 +976,31 @@ class TelegramGUI:
             self.root.after(0, lambda msg=error_text: self.show_error(msg))
 
     def play_notification_sound(self):
-        if platform.system() == "Windows":
-            try:
+        try:
+            if platform.system() == "Windows":
                 import winsound
+
+                try:
+                    winsound.PlaySound(
+                        "SystemExclamation",
+                        winsound.SND_ALIAS | winsound.SND_ASYNC,
+                    )
+                    return
+                except RuntimeError:
+                    pass
+
+                try:
+                    winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+                    return
+                except RuntimeError:
+                    pass
+
                 winsound.Beep(1000, 500)
-            except:
-                pass
+                return
+
+            self.root.bell()
+        except Exception:
+            logging.debug("Notification sound failed", exc_info=True)
 
     def show_popup(self, sender_name, message, chat_id):
         self.close_all_popups()
@@ -991,6 +1010,7 @@ class TelegramGUI:
         }
         popup = create_popup(self.root, sender_name, message, chat_id, callbacks)
         self.active_popups.append(popup)
+        self.play_notification_sound()
 
     def on_popup_reply(self, popup, chat_id):
         self.remove_popup(popup)

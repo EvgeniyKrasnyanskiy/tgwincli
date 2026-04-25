@@ -8,6 +8,15 @@ class EventHandlers:
     def __init__(self, gui):
         self.gui = gui
 
+    def _current_chat_id(self):
+        current_chat = self.gui.current_chat
+        if not current_chat:
+            return None
+        return getattr(getattr(current_chat, "entity", current_chat), "id", None)
+
+    def _is_current_chat(self, chat_id):
+        return self._current_chat_id() == chat_id
+
     async def handle_new_message(self, event):
         """Обработка нового сообщения."""
         chat_id = getattr(event.chat_id, '__int__', lambda: event.chat_id)()
@@ -32,8 +41,7 @@ class EventHandlers:
                 logging.error(f"Ошибка скачивания медиа: {e}")
                 media_info = "[Ошибка загрузки медиа]"
 
-        if not any(getattr(d.entity, 'id', None) == chat_id for d in self.gui.dialogs):
-            await self.gui.load_dialogs()
+        await self.gui.load_dialogs()
 
         chat_index = None
         for i, dialog in enumerate(self.gui.dialogs):
@@ -41,28 +49,29 @@ class EventHandlers:
                 chat_index = i
                 break
 
-        if not self.gui.root.winfo_viewable():
+        is_current_chat = self._is_current_chat(chat_id)
+        window_is_visible = self.gui.root.winfo_viewable()
+
+        if window_is_visible and chat_index is not None and not is_current_chat:
+            self.gui.root.after(0, lambda idx=chat_index: self.gui.blink_chat_name(idx, duration=3000))
+
+        if not window_is_visible or not is_current_chat:
             display_msg = f"{message} {media_info}".strip()
             self.gui.root.after(
                 0,
                 lambda sn=sender_name, dm=display_msg, ci=chat_id: self.gui.show_popup(sn, dm, ci),
             )
-            self.gui.play_notification_sound()
         else:
-            if chat_index is not None:
-                self.gui.root.after(0, lambda idx=chat_index: self.gui.blink_chat_name(idx, duration=3000))
+            self.gui.root.after(0, lambda: self.gui.blink_chat_background())
 
-            if self.gui.current_chat and getattr(self.gui.current_chat, 'id', None) == chat_id:
-                self.gui.root.after(0, lambda: self.gui.blink_chat_background())
-
-        if self.gui.current_chat and getattr(self.gui.current_chat, 'id', None) == chat_id:
+        if is_current_chat:
             body_text = f"{message} {media_info}".strip()
             self.gui.root.after(
                 0,
                 lambda sn=sender_name, ts=timestamp, bt=body_text, mp=media_path, mid=getattr(event.message, "id", None):
                 self.gui.display_chat_message(sn, ts, bt, outgoing=False, message_id=mid, media_path=mp),
             )
-            if self.gui.root.winfo_viewable():
+            if window_is_visible:
                 asyncio.run_coroutine_threadsafe(self.gui.mark_as_read(), self.gui.loop)
 
     async def handle_message_edited(self, event):
@@ -73,7 +82,7 @@ class EventHandlers:
         if chat_id not in TRUSTED_CONTACTS:
             return
 
-        if self.gui.current_chat and getattr(self.gui.current_chat, 'id', None) == chat_id:
+        if self._is_current_chat(chat_id):
             self.gui.root.after(
                 0,
                 lambda: asyncio.run_coroutine_threadsafe(self.gui.load_messages(), self.gui.loop),
@@ -82,7 +91,7 @@ class EventHandlers:
     async def handle_message_deleted(self, event):
         """Обработка удаления сообщения."""
         if self.gui.current_chat:
-            chat_id = getattr(self.gui.current_chat, 'id', None)
+            chat_id = self._current_chat_id()
             if chat_id in TRUSTED_CONTACTS:
                 self.gui.root.after(
                     0,
