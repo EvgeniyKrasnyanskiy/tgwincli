@@ -1,64 +1,66 @@
 import tkinter as tk
 from tkinter import scrolledtext, ttk
 
-def bind_entry_context_menu(entry):
-    context_menu = tk.Menu(entry, tearoff=0)
+
+def bind_text_input_context_menu(text_input):
+    context_menu = tk.Menu(text_input, tearoff=0)
     context_menu.add_command(
         label="Вырезать",
-        command=lambda: entry.event_generate("<<Cut>>"),
+        command=lambda: text_input.event_generate("<<Cut>>"),
     )
     context_menu.add_command(
         label="Копировать",
-        command=lambda: entry.event_generate("<<Copy>>"),
+        command=lambda: text_input.event_generate("<<Copy>>"),
     )
     context_menu.add_command(
         label="Вставить",
-        command=lambda: entry.event_generate("<<Paste>>"),
+        command=lambda: text_input.event_generate("<<Paste>>"),
     )
     context_menu.add_command(
         label="Удалить",
-        command=lambda: entry.delete("sel.first", "sel.last") if entry.selection_present() else None,
+        command=lambda: text_input.delete("sel.first", "sel.last") if text_input.tag_ranges(tk.SEL) else None,
     )
     context_menu.add_separator()
     context_menu.add_command(
         label="Выделить всё",
-        command=lambda: (entry.focus_set(), entry.select_range(0, tk.END), entry.icursor(tk.END)),
+        command=lambda: select_all(),
     )
 
     def show_context_menu(event):
-        entry.focus_set()
+        text_input.focus_set()
         context_menu.tk_popup(event.x_root, event.y_root)
 
     def select_all(event=None):
-        entry.focus_set()
-        entry.select_range(0, tk.END)
-        entry.icursor(tk.END)
+        text_input.focus_set()
+        text_input.tag_add(tk.SEL, "1.0", "end-1c")
+        text_input.mark_set(tk.INSERT, "end-1c")
+        text_input.see(tk.INSERT)
         return "break"
 
     def cut_text(event=None):
-        entry.focus_set()
-        entry.event_generate("<<Cut>>")
+        text_input.focus_set()
+        text_input.event_generate("<<Cut>>")
         return "break"
 
     def copy_text(event=None):
-        entry.focus_set()
-        entry.event_generate("<<Copy>>")
+        text_input.focus_set()
+        text_input.event_generate("<<Copy>>")
         return "break"
 
     def paste_text(event=None):
-        entry.focus_set()
-        entry.event_generate("<<Paste>>")
+        text_input.focus_set()
+        text_input.event_generate("<<Paste>>")
         return "break"
 
-    entry.bind("<Button-3>", show_context_menu)
-    entry.bind("<Control-a>", select_all)
-    entry.bind("<Control-A>", select_all)
-    entry.bind("<Control-x>", cut_text)
-    entry.bind("<Control-X>", cut_text)
-    entry.bind("<Control-c>", copy_text)
-    entry.bind("<Control-C>", copy_text)
-    entry.bind("<Control-v>", paste_text)
-    entry.bind("<Control-V>", paste_text)
+    text_input.bind("<Button-3>", show_context_menu)
+    text_input.bind("<Control-a>", select_all)
+    text_input.bind("<Control-A>", select_all)
+    text_input.bind("<Control-x>", cut_text)
+    text_input.bind("<Control-X>", cut_text)
+    text_input.bind("<Control-c>", copy_text)
+    text_input.bind("<Control-C>", copy_text)
+    text_input.bind("<Control-v>", paste_text)
+    text_input.bind("<Control-V>", paste_text)
 
 
 def create_chat_list(parent):
@@ -123,42 +125,135 @@ def create_message_area(parent):
 def create_input_panel(parent, callbacks):
     bottom_frame = tk.Frame(parent)
     bottom_frame.pack(fill=tk.X, pady=5)
+    bottom_frame.grid_columnconfigure(0, weight=1)
 
-    message_entry = tk.Entry(bottom_frame, font=("Arial", 11))
-    message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-    message_entry.bind("<Return>", lambda e: callbacks["send"]())
-    bind_entry_context_menu(message_entry)
+    input_frame = tk.Frame(
+        bottom_frame,
+        highlightthickness=1,
+        highlightbackground="#c4d7e6",
+        bd=0,
+    )
+    input_frame.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+    input_frame.grid_columnconfigure(0, weight=1)
+
+    message_entry = tk.Text(
+        input_frame,
+        height=1,
+        maxundo=50,
+        wrap=tk.WORD,
+        font=("Arial", 11),
+        relief=tk.FLAT,
+        padx=8,
+        pady=6,
+        borderwidth=0,
+        highlightthickness=0,
+        undo=True,
+    )
+    message_entry.grid(row=0, column=0, sticky="ew")
+    message_entry.tag_configure("placeholder", foreground="#7f8c98")
+    message_entry.placeholder_text = "Введите ваше сообщение"
+    message_entry.placeholder_visible = False
+
+    def update_input_height(event=None):
+        message_entry.update_idletasks()
+        try:
+            display_lines = int(message_entry.count("1.0", "end-1c", "displaylines")[0])
+        except (tk.TclError, TypeError):
+            display_lines = int(message_entry.index("end-1c").split(".")[0])
+        message_entry.configure(height=max(1, min(display_lines, 5)))
+
+    def show_placeholder():
+        if message_entry.get("1.0", "end-1c"):
+            return
+        message_entry.placeholder_visible = True
+        message_entry.insert("1.0", message_entry.placeholder_text, ("placeholder",))
+        message_entry.mark_set(tk.INSERT, "1.0")
+        message_entry.see(tk.INSERT)
+        message_entry.configure(height=1)
+
+    def hide_placeholder():
+        if not message_entry.placeholder_visible:
+            return
+        message_entry.placeholder_visible = False
+        message_entry.delete("1.0", tk.END)
+
+    def on_focus_in(event=None):
+        if message_entry.placeholder_visible:
+            message_entry.after_idle(lambda: message_entry.mark_set(tk.INSERT, "1.0"))
+        return None
+
+    def on_focus_out(event=None):
+        if not message_entry.get("1.0", "end-1c").strip():
+            message_entry.delete("1.0", tk.END)
+            show_placeholder()
+
+    def on_key_press(event=None):
+        if message_entry.placeholder_visible and event.keysym not in {"Tab", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"}:
+            hide_placeholder()
+
+    def send_from_input(event=None):
+        if message_entry.placeholder_visible:
+            return "break"
+        hide_placeholder()
+        callbacks["send"]()
+        update_input_height()
+        if not message_entry.get("1.0", "end-1c").strip():
+            show_placeholder()
+        return "break"
+
+    def insert_newline(event=None):
+        hide_placeholder()
+        message_entry.insert(tk.INSERT, "\n")
+        message_entry.after_idle(update_input_height)
+        return "break"
+
+    message_entry.bind("<FocusIn>", on_focus_in)
+    message_entry.bind("<FocusOut>", on_focus_out)
+    message_entry.bind("<KeyPress>", on_key_press, add="+")
+    message_entry.bind("<Return>", send_from_input)
+    message_entry.bind("<Shift-Return>", insert_newline)
+    message_entry.bind("<KeyRelease>", update_input_height, add="+")
+    message_entry.bind("<<Paste>>", lambda event: (hide_placeholder(), message_entry.after_idle(update_input_height)), add="+")
+    bind_text_input_context_menu(message_entry)
+    show_placeholder()
+
+    button_frame = tk.Frame(bottom_frame)
+    button_frame.grid(row=0, column=1, sticky="e")
+
+    button_options = {
+        "font": ("Arial", 10, "bold"),
+        "width": 10,
+        "height": 2,
+        "padx": 6,
+        "pady": 4,
+    }
 
     tk.Button(
-        bottom_frame,
+        button_frame,
         text="Отправить",
         command=callbacks["send"],
         bg="#0088cc",
         fg="white",
-        font=("Arial", 11, "bold"),
-        width=11,
-        padx=8,
-        pady=4,
-    ).pack(side=tk.LEFT, padx=2)
-    
+        **button_options,
+    ).grid(row=0, column=0, sticky="ew", padx=2)
+
     tk.Button(
-        bottom_frame,
+        button_frame,
         text="Файл",
         command=callbacks["attach"],
         bg="#00aa00",
         fg="white",
-        font=("Arial", 10),
-    ).pack(side=tk.LEFT, padx=2)
-    
+        **button_options,
+    ).grid(row=0, column=1, sticky="ew", padx=2)
+
     tk.Button(
-        bottom_frame,
+        button_frame,
         text="Ред.",
         command=callbacks["edit"],
         bg="#ff9800",
         fg="white",
-        font=("Arial", 10),
-        width=6,
-    ).pack(side=tk.LEFT, padx=2)
+        **button_options,
+    ).grid(row=0, column=2, sticky="ew", padx=2)
 
     return message_entry
 

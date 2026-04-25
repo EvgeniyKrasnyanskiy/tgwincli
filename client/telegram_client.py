@@ -15,6 +15,7 @@ from config.settings import (
     PROXY_PORT,
     PROXY_SECRET,
     PROXY_USERNAME,
+    PROXY_CONNECT_TIMEOUT,
 )
 
 
@@ -31,9 +32,8 @@ class TelegramClientManager:
         self.connection_failures = 0
         self.max_connection_failures = 3
 
-    def _build_client_args(self):
-        mode = (PROXY_MODE or "none").strip().lower()
-        if mode in ("", "none", "off", "direct"):
+    def _build_client_args(self, mode):
+        if mode in ("", "none", "off", "direct", "auto"):
             logging.info("Proxy disabled, using direct Telegram connection.")
             return {}
 
@@ -66,25 +66,69 @@ class TelegramClientManager:
 
         raise ValueError(f"Unsupported PROXY_MODE: {PROXY_MODE}")
 
+    def _create_client(self, mode):
+        client_args = self._build_client_args(mode)
+        client = TelegramClient(
+            "client_session",
+            API_ID,
+            API_HASH,
+            **client_args,
+        )
+        self.client = client
+        self.gui.client = client
+        self.handlers_registered = False
+        return client
+
+    async def _disconnect_current_client(self):
+        if not self.client:
+            return
+        try:
+            await self.client.disconnect()
+        except Exception:
+            logging.debug("Client disconnect failed", exc_info=True)
+        finally:
+            self.client = None
+            self.gui.client = None
+            self.handlers_registered = False
+
+    async def _connect_startup_client(self):
+        mode = (PROXY_MODE or "auto").strip().lower()
+        timeout_seconds = max(1, PROXY_CONNECT_TIMEOUT)
+        await self._disconnect_current_client()
+
+        if mode == "auto":
+            self._create_client("direct")
+            self.gui.set_status("Подключение к Telegram напрямую...", "connecting")
+            try:
+                await asyncio.wait_for(self.client.connect(), timeout=timeout_seconds)
+                logging.info("Connected to Telegram directly.")
+                return
+            except asyncio.TimeoutError:
+                logging.warning("Direct Telegram connection timed out after %s seconds.", timeout_seconds)
+                self.gui.set_status("Прямое подключение не отвечает, пробую MTProto proxy...", "warning")
+            except Exception as e:
+                logging.warning("Direct Telegram connection failed, trying MTProto proxy: %s", e)
+                self.gui.set_status("Прямое подключение не удалось, пробую MTProto proxy...", "warning")
+
+            await self._disconnect_current_client()
+
+            if not PROXY_SECRET:
+                raise ValueError("PROXY_SECRET is required for PROXY_MODE=auto MTProto fallback")
+
+            self._create_client("mtproto")
+            await asyncio.wait_for(self.client.connect(), timeout=timeout_seconds)
+            logging.info("Connected to Telegram through MTProto proxy.")
+            return
+
+        self._create_client(mode)
+        self.gui.set_status("Подключение к Telegram...", "connecting")
+        await asyncio.wait_for(self.client.connect(), timeout=timeout_seconds)
+
     async def start(self):
         while not self.gui.is_closing:
             try:
-                if self.client is None:
-                    client_args = self._build_client_args()
-                    self.client = TelegramClient(
-                        "client_session",
-                        API_ID,
-                        API_HASH,
-                        **client_args,
-                    )
-
-                    self.gui.client = self.client
-
-                self.gui.set_status("Подключение к Telegram...", "connecting")
-
-                # ПОДКЛЮЧАЕМСЯ ТОЛЬКО ОДИН РАЗ
-                if not self.client.is_connected():
-                    await self.client.connect()
+                if self.client is None or not self.client.is_connected():
+                    await self._connect_startup_client()
 
                 logging.info("Successfully connected to Telegram")
 
@@ -110,7 +154,7 @@ class TelegramClientManager:
                 # Важно: ждем, пока клиент работает
                 await self.client.run_until_disconnected()
 
-            except Exception as e:
+            except Exception:
                 if self.gui.is_closing:
                     break
                 logging.exception("Error in client loop")
@@ -118,10 +162,7 @@ class TelegramClientManager:
                     f"Ошибка сети: повтор через {self.retry_delay_seconds} сек...",
                     "error"
                 )
-                # Обязательно очищаем клиента при жесткой ошибке
-                if self.client:
-                    await self.client.disconnect()
-                    self.client = None
+                await self._disconnect_current_client()
 
             await self.stop_connection_monitor()
             await asyncio.sleep(self.retry_delay_seconds)

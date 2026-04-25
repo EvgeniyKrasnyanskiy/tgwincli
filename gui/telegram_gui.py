@@ -158,8 +158,9 @@ class TelegramGUI:
             return self.select_all_messages(event)
         if widget == self.message_entry:
             self.message_entry.focus_set()
-            self.message_entry.select_range(0, tk.END)
-            self.message_entry.icursor(tk.END)
+            self.message_entry.tag_add(tk.SEL, "1.0", "end-1c")
+            self.message_entry.mark_set(tk.INSERT, "end-1c")
+            self.message_entry.see(tk.INSERT)
             return "break"
         return None
 
@@ -833,11 +834,20 @@ class TelegramGUI:
             self.show_warning("Выберите чат!")
             return
 
-        message = self.message_entry.get().strip()
+        if getattr(self.message_entry, "placeholder_visible", False):
+            return
+
+        message = self.message_entry.get("1.0", "end-1c").strip()
         if not message:
             return
 
-        self.message_entry.delete(0, tk.END)
+        self.message_entry.delete("1.0", tk.END)
+        self.message_entry.configure(height=1)
+        if hasattr(self.message_entry, "placeholder_text"):
+            self.message_entry.placeholder_visible = True
+            self.message_entry.insert("1.0", self.message_entry.placeholder_text, ("placeholder",))
+            self.message_entry.mark_set(tk.INSERT, "1.0")
+            self.message_entry.see(tk.INSERT)
         self.set_status("Отправка сообщения...", "busy")
 
         if self.loop:
