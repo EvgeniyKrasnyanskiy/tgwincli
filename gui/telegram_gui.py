@@ -39,6 +39,8 @@ class TelegramGUI:
         self.root.withdraw()
 
         self.client = None
+        self.client_manager = None
+        self.settings_btn = None
         self.current_chat = None
         self.loop = None
         self.dialogs = []
@@ -80,7 +82,9 @@ class TelegramGUI:
             'edit': self.edit_last_message
         }
         self.message_entry = create_input_panel(right_frame, callbacks)
-        _, self.status_dot, self.status_label = create_status_bar(self.root)
+        _, self.status_dot, self.status_label, self.settings_btn = create_status_bar(
+            self.root, on_settings_click=self.open_proxy_settings
+        )
 
         # ЗАМЕНЕНО: "\u0417\u0430\u043f\u0443\u0441\u043a..." -> "Запуск..."
         self.set_status("Запуск...", "neutral")
@@ -647,6 +651,13 @@ class TelegramGUI:
         self.status_dot.config(fg=dot_color, bg=bg_color)
         self.status_label.config(text=text, fg=text_color, bg=bg_color)
         self.status_dot.master.config(bg=bg_color)
+        if getattr(self, "settings_btn", None):
+            self.settings_btn.config(
+                bg=bg_color,
+                fg=text_color,
+                activebackground=bg_color,
+                activeforeground=text_color,
+            )
 
     def connect_to_telegram(self):
         if not API_ID or not API_HASH or not PHONE:
@@ -671,8 +682,18 @@ class TelegramGUI:
     def run_telegram_client(self):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
-        client_manager = TelegramClientManager(self)
-        self.loop.run_until_complete(client_manager.start())
+        self.client_manager = TelegramClientManager(self)
+        self.loop.run_until_complete(self.client_manager.start())
+
+    def open_proxy_settings(self):
+        from gui.settings_dialog import ProxySettingsDialog
+
+        ProxySettingsDialog(self.root, on_save_callback=self.on_proxy_settings_saved)
+
+    def on_proxy_settings_saved(self, new_settings):
+        self.set_status("Применение настроек прокси...", "connecting")
+        if self.client_manager and self.loop:
+            asyncio.run_coroutine_threadsafe(self.client_manager.trigger_reconnect(), self.loop)
 
     async def get_code_from_user(self):
         code_container = [None]
@@ -1103,7 +1124,10 @@ class TelegramGUI:
         def on_quit(icon, item):
             self.quit_app()
 
-        self.tray_icon = create_tray_icon(on_left_click, on_quit)
+        def on_settings(icon, item):
+            self.root.after(0, lambda: (self.root.deiconify(), self.open_proxy_settings()))
+
+        self.tray_icon = create_tray_icon(on_left_click, on_quit, on_settings=on_settings)
         try:
             self.tray_icon.run()
         except Exception:

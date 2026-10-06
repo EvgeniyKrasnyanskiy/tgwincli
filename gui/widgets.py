@@ -271,7 +271,7 @@ def create_progress_label(parent):
     return progress_frame, progress_label, progress_bar
 
 
-def create_status_bar(parent):
+def create_status_bar(parent, on_settings_click=None):
     frame = tk.Frame(parent, bg="#eef3f7", bd=1, relief=tk.SOLID)
     frame.pack(fill=tk.X, side=tk.BOTTOM)
 
@@ -288,4 +288,21 @@ def create_status_bar(parent):
     )
     status_label.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=4)
 
-    return frame, status_dot, status_label
+    settings_btn = tk.Button(
+        frame,
+        text="⚙ Прокси",
+        command=on_settings_click,
+        bg="#eef3f7",
+        fg="#2f3b45",
+        activebackground="#dbe5ed",
+        activeforeground="#162029",
+        bd=0,
+        relief=tk.FLAT,
+        font=("Arial", 9, "bold"),
+        cursor="hand2",
+        padx=8,
+        pady=2,
+    )
+    settings_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=2)
+
+    return frame, status_dot, status_label, settings_btn
