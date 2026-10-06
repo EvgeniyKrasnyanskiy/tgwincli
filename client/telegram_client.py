@@ -9,13 +9,9 @@ from config.settings import (
     API_HASH,
     API_ID,
     PHONE,
-    PROXY_HOST,
-    PROXY_MODE,
-    PROXY_PASSWORD,
-    PROXY_PORT,
-    PROXY_SECRET,
-    PROXY_USERNAME,
-    PROXY_CONNECT_TIMEOUT,
+    get_proxy_settings,
+    save_proxy_settings,
+    detect_tgws_proxy,
 )
 
 
@@ -31,43 +27,55 @@ class TelegramClientManager:
         self.connection_check_timeout = 12
         self.connection_failures = 0
         self.max_connection_failures = 3
+        self.reconnect_event = asyncio.Event()
 
-    def _build_client_args(self, mode):
-        if mode in ("", "none", "off", "direct", "auto"):
+    def _build_client_args(self, mode, proxy_cfg=None):
+        if proxy_cfg is None:
+            proxy_cfg = get_proxy_settings()
+
+        mode = (mode or "direct").strip().lower()
+        if mode in ("", "none", "off", "direct"):
             logging.info("Proxy disabled, using direct Telegram connection.")
             return {}
+
+        host = proxy_cfg.get("host") or "127.0.0.1"
+        port = int(proxy_cfg.get("port") or 1443)
 
         if mode in ("socks", "socks5"):
             import socks
 
-            proxy = (socks.SOCKS5, PROXY_HOST, PROXY_PORT)
-            if PROXY_USERNAME or PROXY_PASSWORD:
+            username = proxy_cfg.get("username")
+            password = proxy_cfg.get("password")
+            if username or password:
                 proxy = (
                     socks.SOCKS5,
-                    PROXY_HOST,
-                    PROXY_PORT,
+                    host,
+                    port,
                     True,
-                    PROXY_USERNAME,
-                    PROXY_PASSWORD,
+                    username,
+                    password,
                 )
+            else:
+                proxy = (socks.SOCKS5, host, port)
 
-            logging.info("Initializing through SOCKS5 proxy %s:%s...", PROXY_HOST, PROXY_PORT)
+            logging.info("Initializing through SOCKS5 proxy %s:%s...", host, port)
             return {"proxy": proxy}
 
         if mode in ("mtproto", "mtproxy"):
-            if not PROXY_SECRET:
+            secret = (proxy_cfg.get("secret") or "").strip()
+            if not secret:
                 raise ValueError("PROXY_SECRET is required for MTProto mode")
 
-            logging.info("Initializing through MTProto proxy %s:%s...", PROXY_HOST, PROXY_PORT)
+            logging.info("Initializing through MTProto proxy %s:%s...", host, port)
             return {
                 "connection": connection.ConnectionTcpMTProxyRandomizedIntermediate,
-                "proxy": (PROXY_HOST, PROXY_PORT, PROXY_SECRET),
+                "proxy": (host, port, secret),
             }
 
-        raise ValueError(f"Unsupported PROXY_MODE: {PROXY_MODE}")
+        raise ValueError(f"Unsupported PROXY_MODE: {mode}")
 
-    def _create_client(self, mode):
-        client_args = self._build_client_args(mode)
+    def _create_client(self, mode, proxy_cfg=None):
+        client_args = self._build_client_args(mode, proxy_cfg)
         client = TelegramClient(
             "client_session",
             API_ID,
@@ -91,13 +99,19 @@ class TelegramClientManager:
             self.gui.client = None
             self.handlers_registered = False
 
+    async def trigger_reconnect(self):
+        logging.info("Reconnection requested.")
+        await self._disconnect_current_client()
+        self.reconnect_event.set()
+
     async def _connect_startup_client(self):
-        mode = (PROXY_MODE or "auto").strip().lower()
-        timeout_seconds = max(1, PROXY_CONNECT_TIMEOUT)
+        proxy_cfg = get_proxy_settings()
+        mode = (proxy_cfg.get("mode") or "auto").strip().lower()
+        timeout_seconds = max(1, int(proxy_cfg.get("timeout") or 12))
         await self._disconnect_current_client()
 
         if mode == "auto":
-            self._create_client("direct")
+            self._create_client("direct", proxy_cfg)
             self.gui.set_status("Подключение к Telegram напрямую...", "connecting")
             try:
                 await asyncio.wait_for(self.client.connect(), timeout=timeout_seconds)
@@ -112,15 +126,22 @@ class TelegramClientManager:
 
             await self._disconnect_current_client()
 
-            if not PROXY_SECRET:
+            if not proxy_cfg.get("secret"):
+                detected = detect_tgws_proxy()
+                if detected and detected.get("secret"):
+                    logging.info("Auto-detected TG WS Proxy configuration")
+                    proxy_cfg.update(detected)
+                    save_proxy_settings(detected)
+
+            if not proxy_cfg.get("secret"):
                 raise ValueError("PROXY_SECRET is required for PROXY_MODE=auto MTProto fallback")
 
-            self._create_client("mtproto")
+            self._create_client("mtproto", proxy_cfg)
             await asyncio.wait_for(self.client.connect(), timeout=timeout_seconds)
             logging.info("Connected to Telegram through MTProto proxy.")
             return
 
-        self._create_client(mode)
+        self._create_client(mode, proxy_cfg)
         self.gui.set_status("Подключение к Telegram...", "connecting")
         await asyncio.wait_for(self.client.connect(), timeout=timeout_seconds)
 
@@ -165,7 +186,11 @@ class TelegramClientManager:
                 await self._disconnect_current_client()
 
             await self.stop_connection_monitor()
-            await asyncio.sleep(self.retry_delay_seconds)
+            try:
+                await asyncio.wait_for(self.reconnect_event.wait(), timeout=self.retry_delay_seconds)
+                self.reconnect_event.clear()
+            except asyncio.TimeoutError:
+                pass
 
     def start_connection_monitor(self):
         if self.connection_monitor_task and not self.connection_monitor_task.done():
